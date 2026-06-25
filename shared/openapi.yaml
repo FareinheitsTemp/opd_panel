@@ -1,0 +1,110 @@
+openapi: 3.0.3
+info:
+  title: OPD Agent API
+  description: Internal API between Go daemon and Rust agent. Listens on 127.0.0.1:7070 only.
+  version: 0.1.0
+
+servers:
+  - url: http://127.0.0.1:7070
+
+security:
+  - HmacAuth: []
+
+components:
+  securitySchemes:
+    HmacAuth:
+      type: apiKey
+      in: header
+      name: X-Agent-Token
+
+  schemas:
+    ServerStatus:
+      type: object
+      properties:
+        id:        { type: string }
+        status:    { type: string, enum: [running, stopped, starting, stopping, crashed] }
+        pid:       { type: integer, nullable: true }
+        ram_used:  { type: integer, description: bytes }
+        ram_max:   { type: integer, description: bytes }
+        cpu:       { type: number,  description: percent 0-100 }
+        uptime:    { type: integer, description: seconds }
+        players:   { type: integer }
+
+paths:
+  /servers:
+    get:
+      summary: List all managed servers
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ServerStatus' }
+
+  /servers/{id}/start:
+    post:
+      summary: Start a server
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Started }
+
+  /servers/{id}/stop:
+    post:
+      summary: Stop a server gracefully
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Stopped }
+
+  /servers/{id}/restart:
+    post:
+      summary: Restart a server
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Restarting }
+
+  /servers/{id}/status:
+    get:
+      summary: Get server status and metrics
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerStatus' }
+
+  /servers/{id}/console:
+    post:
+      summary: Send a command to server stdin
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                command: { type: string }
+      responses:
+        '200': { description: Sent }
+
+  /servers/{id}/logs:
+    get:
+      summary: Stream server stdout (WebSocket upgrade)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '101': { description: WebSocket stream }
+
+  /servers/{id}/backup:
+    post:
+      summary: Create a backup
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Backup created }

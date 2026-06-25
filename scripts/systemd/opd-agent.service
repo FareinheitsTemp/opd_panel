@@ -1,0 +1,15 @@
+[Unit]
+Description=OPD Agent (Rust process supervisor)
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/opd/.env
+ExecStart=/usr/local/bin/opd-agent
+Restart=on-failure
+RestartSec=3s
+User=root
+Group=opd
+
+[Install]
+WantedBy=multi-user.target
