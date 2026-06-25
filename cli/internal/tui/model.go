@@ -12,16 +12,16 @@ import (
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/ipc"
 )
 
-// ── styles ──────────────────────────────────────────────────────────────────
+// ── styles ────────────────────────────────────────────────────────────────────
 
 var (
-	styleTitle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).MarginBottom(1)
+	styleTitle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).MarginBottom(1)
 	styleSelected = lipgloss.NewStyle().Background(lipgloss.Color("236")).Foreground(lipgloss.Color("255")).PaddingLeft(1)
-	styleNormal = lipgloss.NewStyle().PaddingLeft(1)
-	styleHelp = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).MarginTop(1)
-	styleLog = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
-	styleBorder = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("238")).Padding(0, 1)
-	styleCursor = lipgloss.NewStyle().Foreground(lipgloss.Color("86"))
+	styleNormal   = lipgloss.NewStyle().PaddingLeft(1)
+	styleHelp     = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).MarginTop(1)
+	styleLog      = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+	styleBorder   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("238")).Padding(0, 1)
+	styleCursor   = lipgloss.NewStyle().Foreground(lipgloss.Color("86"))
 
 	statusColors = map[string]string{
 		"running":  "82",
@@ -39,13 +39,13 @@ func colorStatus(s string) string {
 	return s
 }
 
-// ── messages ─────────────────────────────────────────────────────────────────
+// ── messages ──────────────────────────────────────────────────────────────────
 
 type tickMsg struct{}
 type serversMsg []ipc.ServerInfo
 type logLineMsg string
 
-// ── model ────────────────────────────────────────────────────────────────────
+// ── model ─────────────────────────────────────────────────────────────────────
 
 type view int
 
@@ -56,25 +56,23 @@ const (
 )
 
 type Model struct {
-	client    *client.Client
-	program   *tea.Program // set after p.Run(); used to send messages from goroutines
-	servers   []ipc.ServerInfo
-	cursor    int
-	curView   view
-	logs      []string
-	input     string
-	width     int
-	height    int
+	client       *client.Client
+	program      *tea.Program
+	servers      []ipc.ServerInfo
+	cursor       int
+	curView      view
+	activeServer string // ID of server currently viewed in logs/console
+	logs         []string
+	input        string
+	width        int
+	height       int
 }
 
 func NewModel(c *client.Client) *Model {
 	return &Model{client: c}
 }
 
-// SetProgram must be called right after tea.NewProgram, before p.Run().
-func (m *Model) SetProgram(p *tea.Program) {
-	m.program = p
-}
+func (m *Model) SetProgram(p *tea.Program) { m.program = p }
 
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(m.fetchServers(), tickEvery(2*time.Second))
@@ -91,6 +89,13 @@ func (m *Model) fetchServers() tea.Cmd {
 	}
 }
 
+func (m *Model) selectedID() string {
+	if len(m.servers) == 0 || m.cursor >= len(m.servers) {
+		return ""
+	}
+	return m.servers[m.cursor].ID
+}
+
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
@@ -102,14 +107,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case serversMsg:
 		m.servers = []ipc.ServerInfo(msg)
-		if m.cursor >= len(m.servers) && len(m.servers) > 0 {
+		// Clamp cursor safely.
+		if len(m.servers) == 0 {
+			m.cursor = 0
+		} else if m.cursor >= len(m.servers) {
 			m.cursor = len(m.servers) - 1
 		}
 
 	case logLineMsg:
 		m.logs = append(m.logs, string(msg))
-		if len(m.logs) > 500 {
-			m.logs = m.logs[len(m.logs)-500:]
+		const maxLogs = 500
+		if len(m.logs) > maxLogs {
+			m.logs = m.logs[len(m.logs)-maxLogs:]
 		}
 		return m, nil
 
@@ -135,34 +144,31 @@ func (m *Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor--
 		}
 	case "down", "j":
-		if m.cursor < len(m.servers)-1 {
+		if len(m.servers) > 0 && m.cursor < len(m.servers)-1 {
 			m.cursor++
 		}
 	case "s":
-		if len(m.servers) > 0 {
-			id := m.servers[m.cursor].ID
+		if id := m.selectedID(); id != "" {
 			return m, func() tea.Msg { m.client.Start(id); return m.fetchServers()() }
 		}
 	case "x":
-		if len(m.servers) > 0 {
-			id := m.servers[m.cursor].ID
+		if id := m.selectedID(); id != "" {
 			return m, func() tea.Msg { m.client.Stop(id); return m.fetchServers()() }
 		}
 	case "r":
-		if len(m.servers) > 0 {
-			id := m.servers[m.cursor].ID
+		if id := m.selectedID(); id != "" {
 			return m, func() tea.Msg { m.client.Restart(id); return m.fetchServers()() }
 		}
 	case "l":
-		if len(m.servers) > 0 {
-			id := m.servers[m.cursor].ID
+		if id := m.selectedID(); id != "" {
+			m.activeServer = id
 			m.curView = viewLogs
 			m.logs = nil
 			return m, m.startLogStream(id)
 		}
 	case "c":
-		if len(m.servers) > 0 {
-			id := m.servers[m.cursor].ID
+		if id := m.selectedID(); id != "" {
+			m.activeServer = id
 			m.curView = viewConsole
 			m.input = ""
 			m.logs = nil
@@ -176,6 +182,7 @@ func (m *Model) updateLogs(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "q" || msg.String() == "esc" {
 		m.curView = viewList
 		m.logs = nil
+		m.activeServer = ""
 	}
 	return m, nil
 }
@@ -185,9 +192,10 @@ func (m *Model) updateConsole(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.curView = viewList
 		m.input = ""
+		m.activeServer = ""
 	case "enter":
-		if m.input != "" && len(m.servers) > 0 {
-			id := m.servers[m.cursor].ID
+		if m.input != "" && m.activeServer != "" {
+			id := m.activeServer
 			cmd := m.input
 			m.input = ""
 			return m, func() tea.Msg {
@@ -207,9 +215,9 @@ func (m *Model) updateConsole(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// startLogStream opens the log subscription and pushes each line as a
-// logLineMsg into the bubbletea program via p.Send() — the correct pattern
-// for feeding external goroutine events into a tea.Program.
+// startLogStream opens a log subscription and pumps lines into the
+// bubbletea program via p.Send() — the only safe way to inject messages
+// from an external goroutine.
 func (m *Model) startLogStream(id string) tea.Cmd {
 	return func() tea.Msg {
 		ch, err := m.client.StreamLogs(id)
@@ -243,7 +251,7 @@ func (m *Model) viewList() string {
 	sb.WriteString(styleTitle.Render(" ◈ OPD — Server Manager ") + "\n")
 
 	if len(m.servers) == 0 {
-		sb.WriteString(styleNormal.Render("No running servers. Use 'opd start <id>' or press 's' to start.") + "\n")
+		sb.WriteString(styleNormal.Render("No running servers. Use 'opd start <id>' to start one.") + "\n")
 	} else {
 		for i, s := range m.servers {
 			ram := fmt.Sprintf("%dMB / %dMB", s.RAMUsed/1024/1024, s.RAMMax/1024/1024)
@@ -264,20 +272,9 @@ func (m *Model) viewList() string {
 
 func (m *Model) viewLogs() string {
 	var sb strings.Builder
-	id := ""
-	if len(m.servers) > 0 {
-		id = m.servers[m.cursor].ID
-	}
-	sb.WriteString(styleTitle.Render(fmt.Sprintf(" ◈ Logs — %s ", id)) + "\n")
+	sb.WriteString(styleTitle.Render(fmt.Sprintf(" ◈ Logs — %s ", m.activeServer)) + "\n")
 
-	visible := m.logs
-	maxLines := m.height - 8
-	if maxLines < 5 {
-		maxLines = 5
-	}
-	if len(visible) > maxLines {
-		visible = visible[len(visible)-maxLines:]
-	}
+	visible := m.visibleLines(m.height - 8)
 	for _, line := range visible {
 		sb.WriteString(styleLog.Render(line) + "\n")
 	}
@@ -287,20 +284,9 @@ func (m *Model) viewLogs() string {
 
 func (m *Model) viewConsole() string {
 	var sb strings.Builder
-	id := ""
-	if len(m.servers) > 0 {
-		id = m.servers[m.cursor].ID
-	}
-	sb.WriteString(styleTitle.Render(fmt.Sprintf(" ◈ Console — %s ", id)) + "\n")
+	sb.WriteString(styleTitle.Render(fmt.Sprintf(" ◈ Console — %s ", m.activeServer)) + "\n")
 
-	visible := m.logs
-	maxLines := m.height - 10
-	if maxLines < 3 {
-		maxLines = 3
-	}
-	if len(visible) > maxLines {
-		visible = visible[len(visible)-maxLines:]
-	}
+	visible := m.visibleLines(m.height - 10)
 	for _, line := range visible {
 		sb.WriteString(styleLog.Render(line) + "\n")
 	}
@@ -308,4 +294,15 @@ func (m *Model) viewConsole() string {
 	sb.WriteString(styleCursor.Render("> ") + m.input + "█")
 	sb.WriteString(styleHelp.Render("\nenter — send  esc — back"))
 	return styleBorder.Render(sb.String())
+}
+
+// visibleLines returns the last n lines of m.logs, safe for any n.
+func (m *Model) visibleLines(n int) []string {
+	if n < 1 {
+		n = 1
+	}
+	if len(m.logs) <= n {
+		return m.logs
+	}
+	return m.logs[len(m.logs)-n:]
 }

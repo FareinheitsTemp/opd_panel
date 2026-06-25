@@ -10,9 +10,9 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-)
 
-const serversRoot = "/var/lib/opd/servers"
+	"github.com/FareinheitsTemp/opd_panel/cli/internal/supervisor/config"
+)
 
 type serverConfigJSON struct {
 	Name      string   `json:"name"`
@@ -31,9 +31,8 @@ Put your server.jar in that directory and run 'opd start <id>'.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]
-		dir := filepath.Join(serversRoot, id)
+		dir := filepath.Join(config.ServersRoot, id)
 
-		// Check if already exists
 		configPath := filepath.Join(dir, "opd.json")
 		if _, err := os.Stat(configPath); err == nil {
 			return fmt.Errorf("config already exists at %s", configPath)
@@ -61,6 +60,12 @@ Put your server.jar in that directory and run 'opd start <id>'.`,
 		if err != nil {
 			return fmt.Errorf("invalid RAM max: %s", ramMaxStr)
 		}
+		if ramMin > ramMax {
+			return fmt.Errorf("min RAM (%d) cannot exceed max RAM (%d)", ramMin, ramMax)
+		}
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("port %d out of range (1-65535)", port)
+		}
 
 		cfg := serverConfigJSON{
 			Name:      name,
@@ -71,12 +76,10 @@ Put your server.jar in that directory and run 'opd start <id>'.`,
 			JavaFlags: []string{},
 		}
 
-		// Create directory
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return fmt.Errorf("create dir %s: %w", dir, err)
 		}
 
-		// Write opd.json
 		f, err := os.Create(configPath)
 		if err != nil {
 			return fmt.Errorf("create config: %w", err)

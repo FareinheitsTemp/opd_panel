@@ -16,16 +16,27 @@ import (
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/supervisor/config"
 )
 
+// Handle owns a single running Java process.
 type Handle struct {
 	cfg          *config.ServerConfig
 	cmd          *exec.Cmd
 	stdin        io.WriteCloser
 	logBroadcast *broadcast
-	exitCh       chan int
-	stopped      atomic.Bool
-	statusMu     sync.RWMutex
-	status       string
-	pid          int
+
+	// doneCh is closed exactly once when the process exits.
+	// exitCode carries the process exit code.
+	// Using a separate doneCh avoids the race in Stop() where
+	// we had to put the code back onto exitCh for Watch().
+	doneCh   chan struct{}
+	exitCode int
+
+	// stopped is set to true ONLY by an intentional Stop().
+	// watch() uses this to distinguish crash from graceful stop.
+	stopped atomic.Bool
+
+	statusMu sync.RWMutex
+	status   string
+	pid      int
 }
 
 func Spawn(cfg *config.ServerConfig) (*Handle, error) {
@@ -56,7 +67,7 @@ func Spawn(cfg *config.ServerConfig) (*Handle, error) {
 		cmd:          cmd,
 		stdin:        stdin,
 		logBroadcast: newBroadcast(),
-		exitCh:       make(chan int, 1),
+		doneCh:       make(chan struct{}),
 		pid:          cmd.Process.Pid,
 		status:       "starting",
 	}
@@ -78,12 +89,13 @@ func Spawn(cfg *config.ServerConfig) (*Handle, error) {
 		} else {
 			h.status = "crashed"
 		}
+		h.exitCode = code
 		h.statusMu.Unlock()
+
 		h.logBroadcast.close()
-		h.exitCh <- code
+		close(h.doneCh) // signal to both Stop() and watch() simultaneously
 	}()
 
-	// Mark running only after pipes are set up
 	h.statusMu.Lock()
 	h.status = "running"
 	h.statusMu.Unlock()
@@ -103,36 +115,36 @@ func (h *Handle) SendCommand(cmd string) error {
 	return err
 }
 
-// Stop sends 'stop' to stdin and waits up to 30s for graceful exit,
-// then kills the process forcefully.
+// Stop sends 'stop' to stdin and waits up to 30 s for graceful exit,
+// then kills the process. Does NOT set h.stopped — that is the caller's
+// responsibility (Supervisor.Stop sets it; Supervisor.Restart must NOT).
 func (h *Handle) Stop() error {
-	h.stopped.Store(true)
 	h.statusMu.Lock()
 	h.status = "stopping"
 	h.statusMu.Unlock()
 
-	// Send stop command
 	_ = h.SendCommand("stop")
 
-	// Wait up to 30s for graceful shutdown
 	select {
-	case <-h.exitCh:
-		// Process exited cleanly — put the code back so Watch() can read it
-		// Actually we consumed it, so send 0 back
-		h.exitCh <- 0
+	case <-h.doneCh:
 		return nil
 	case <-time.After(30 * time.Second):
-		// Force kill
 		if h.cmd.Process != nil {
 			_ = h.cmd.Process.Kill()
 		}
+		<-h.doneCh // wait for goroutine to finish after kill
 		return nil
 	}
 }
 
-func (h *Handle) Wait() int {
-	return <-h.exitCh
-}
+// Done returns a channel that is closed when the process exits.
+func (h *Handle) Done() <-chan struct{} { return h.doneCh }
+
+// ExitCode is safe to read only after Done() is closed.
+func (h *Handle) ExitCode() int { return h.exitCode }
+
+func (h *Handle) MarkStopped()             { h.stopped.Store(true) }
+func (h *Handle) IntentionallyStopped() bool { return h.stopped.Load() }
 
 func (h *Handle) IsRunning() bool {
 	h.statusMu.RLock()
@@ -140,15 +152,15 @@ func (h *Handle) IsRunning() bool {
 	return h.status == "running" || h.status == "starting"
 }
 
-func (h *Handle) IntentionallyStopped() bool { return h.stopped.Load() }
 func (h *Handle) Status() string {
 	h.statusMu.RLock()
 	defer h.statusMu.RUnlock()
 	return h.status
 }
-func (h *Handle) PID() int        { return h.pid }
-func (h *Handle) Port() int       { return h.cfg.Port }
-func (h *Handle) Name() string    { return h.cfg.Name }
+
+func (h *Handle) PID() int           { return h.pid }
+func (h *Handle) Port() int          { return h.cfg.Port }
+func (h *Handle) Name() string       { return h.cfg.Name }
 func (h *Handle) SubscribeLogs() <-chan string { return h.logBroadcast.subscribe() }
 
 func (h *Handle) Metrics() *ipc.MetricsInfo {
@@ -159,11 +171,9 @@ func (h *Handle) Metrics() *ipc.MetricsInfo {
 			RAMMax:   uint64(h.cfg.RAMMaxMB) * 1024 * 1024,
 		}
 	}
-
 	cpu, _ := p.CPUPercent()
 	mem, _ := p.MemoryInfo()
 	created, _ := p.CreateTime()
-
 	var ramUsed uint64
 	if mem != nil {
 		ramUsed = mem.RSS
@@ -172,7 +182,6 @@ func (h *Handle) Metrics() *ipc.MetricsInfo {
 	if created > 0 {
 		uptime = uint64(time.Now().UnixMilli()/1000) - uint64(created/1000)
 	}
-
 	return &ipc.MetricsInfo{
 		ServerID: h.cfg.ID,
 		PID:      uint32(h.pid),

@@ -18,6 +18,7 @@ type Daemon struct {
 	listener   net.Listener
 	supervisor *supervisor.Supervisor
 	mu         sync.Mutex
+	shutdown   bool
 }
 
 func New() (*Daemon, error) {
@@ -33,7 +34,7 @@ func New() (*Daemon, error) {
 	}
 
 	sup := supervisor.New()
-	sup.RestoreState() // restart servers that were running before daemon stopped
+	sup.RestoreState()
 
 	return &Daemon{listener: l, supervisor: sup}, nil
 }
@@ -42,14 +43,24 @@ func (d *Daemon) ListenAndServe() error {
 	for {
 		conn, err := d.listener.Accept()
 		if err != nil {
-			// Listener closed = clean shutdown
-			return nil
+			d.mu.Lock()
+			shutdown := d.shutdown
+			d.mu.Unlock()
+			if shutdown {
+				// Clean shutdown — not an error
+				return nil
+			}
+			return err
 		}
 		go d.handleConn(conn)
 	}
 }
 
 func (d *Daemon) Shutdown() error {
+	d.mu.Lock()
+	d.shutdown = true
+	d.mu.Unlock()
+
 	d.supervisor.StopAll()
 	return d.listener.Close()
 }
@@ -114,6 +125,11 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		enc.Encode(ipc.Response{Type: ipc.RespData, Data: m})
 
 	case ipc.CmdRemove:
+		// Safety check: refuse if server is currently running.
+		if d.supervisor.IsRunning(req.ServerID) {
+			writeError(conn, fmt.Sprintf("server %s is running — stop it first", req.ServerID))
+			return
+		}
 		if err := config.Remove(req.ServerID); err != nil {
 			writeError(conn, err.Error())
 			return
@@ -121,7 +137,6 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		enc.Encode(ipc.Response{Type: ipc.RespOK, Message: fmt.Sprintf("%s removed", req.ServerID)})
 
 	case ipc.CmdStreamLogs:
-		// Persistent connection — stream log lines until client disconnects
 		ch, err := d.supervisor.SubscribeLogs(req.ServerID)
 		if err != nil {
 			writeError(conn, err.Error())

@@ -11,6 +11,8 @@ import (
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/supervisor/state"
 )
 
+const maxRespawnAttempts = 5
+
 type Supervisor struct {
 	mu      sync.RWMutex
 	servers map[string]*process.Handle
@@ -20,7 +22,7 @@ func New() *Supervisor {
 	return &Supervisor{servers: make(map[string]*process.Handle)}
 }
 
-// RestoreState starts servers that were running before the daemon was last stopped.
+// RestoreState starts servers that were running before the daemon last stopped.
 func (s *Supervisor) RestoreState() {
 	ids, err := state.Load()
 	if err != nil || len(ids) == 0 {
@@ -54,34 +56,78 @@ func (s *Supervisor) Start(id string) error {
 	}
 
 	s.servers[id] = h
-	s.persistState()
-	go s.watch(id, cfg)
+	s.saveState() // safe: called under mu.Lock() — saveState does NOT lock
+	go s.watch(id, cfg, 0)
 
 	return nil
 }
 
+// Stop gracefully stops a server. Marks it as intentionally stopped so
+// watch() does not attempt a respawn.
 func (s *Supervisor) Stop(id string) error {
 	s.mu.RLock()
 	h, ok := s.servers[id]
 	s.mu.RUnlock()
+
 	if !ok {
 		return fmt.Errorf("server %s not found", id)
 	}
-	// Stop() blocks until process exits or 30s timeout
-	err := h.Stop()
-	s.persistState()
-	return err
+
+	// Mark stopped BEFORE calling h.Stop() so the goroutine in watch()
+	// sees the flag when doneCh fires.
+	h.MarkStopped()
+	if err := h.Stop(); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	delete(s.servers, id)
+	s.saveState()
+	s.mu.Unlock()
+
+	return nil
 }
 
+// Restart gracefully stops then restarts a server.
+// Critically: we do NOT set h.MarkStopped() so watch() will respawn,
+// but we also don't rely on the old watch() — we stop it cleanly and
+// start a fresh one to avoid double-watch races.
 func (s *Supervisor) Restart(id string) error {
 	s.mu.RLock()
 	h, ok := s.servers[id]
 	s.mu.RUnlock()
+
 	if !ok {
 		return fmt.Errorf("server %s not found", id)
 	}
-	// Stop blocks, then watchdog auto-restarts
-	return h.Stop()
+
+	cfg, err := config.Load(id)
+	if err != nil {
+		return err
+	}
+
+	// Stop old process cleanly — mark it intentionally stopped
+	// so the OLD watch() goroutine exits.
+	h.MarkStopped()
+	_ = h.Stop()
+
+	// Spawn fresh process
+	newH, err := process.Spawn(cfg)
+	if err != nil {
+		s.mu.Lock()
+		delete(s.servers, id)
+		s.saveState()
+		s.mu.Unlock()
+		return fmt.Errorf("restart %s: %w", id, err)
+	}
+
+	s.mu.Lock()
+	s.servers[id] = newH
+	s.saveState()
+	s.mu.Unlock()
+
+	go s.watch(id, cfg, 0)
+	return nil
 }
 
 func (s *Supervisor) SendCommand(id, cmd string) error {
@@ -114,10 +160,18 @@ func (s *Supervisor) SubscribeLogs(id string) (<-chan string, error) {
 	return h.SubscribeLogs(), nil
 }
 
+func (s *Supervisor) IsRunning(id string) bool {
+	s.mu.RLock()
+	h, ok := s.servers[id]
+	s.mu.RUnlock()
+	return ok && h.IsRunning()
+}
+
 func (s *Supervisor) List() []ipc.ServerInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var out []ipc.ServerInfo
+
+	out := make([]ipc.ServerInfo, 0, len(s.servers))
 	for id, h := range s.servers {
 		m := h.Metrics()
 		out = append(out, ipc.ServerInfo{
@@ -135,7 +189,9 @@ func (s *Supervisor) List() []ipc.ServerInfo {
 	return out
 }
 
+// StopAll stops every running server concurrently and clears state.
 func (s *Supervisor) StopAll() {
+	// Snapshot IDs under lock, then release before blocking Stop() calls.
 	s.mu.RLock()
 	ids := make([]string, 0, len(s.servers))
 	for id := range s.servers {
@@ -143,67 +199,84 @@ func (s *Supervisor) StopAll() {
 	}
 	s.mu.RUnlock()
 
+	var wg sync.WaitGroup
 	for _, id := range ids {
-		if err := s.Stop(id); err != nil {
-			fmt.Printf("[opd] stop %s: %v\n", id, err)
-		}
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			if err := s.Stop(id); err != nil {
+				fmt.Printf("[opd] stop %s: %v\n", id, err)
+			}
+		}(id)
 	}
-	// Clear state on clean shutdown
+	wg.Wait()
+
 	_ = state.Save([]string{})
 }
 
-// persistState saves currently running server IDs to disk.
-// Must be called with no locks held (takes RLock internally).
-func (s *Supervisor) persistState() {
-	s.mu.RLock()
+// saveState persists currently running IDs to disk.
+// MUST be called while mu is already held (Lock or RLock) — does NOT lock itself.
+func (s *Supervisor) saveState() {
 	ids := make([]string, 0, len(s.servers))
 	for id, h := range s.servers {
 		if h.IsRunning() {
 			ids = append(ids, id)
 		}
 	}
-	s.mu.RUnlock()
 	_ = state.Save(ids)
 }
 
-func (s *Supervisor) watch(id string, cfg *config.ServerConfig) {
-	for {
-		s.mu.RLock()
-		h, ok := s.servers[id]
-		s.mu.RUnlock()
-		if !ok {
-			return
-		}
-
-		exitCode := h.Wait()
-
-		if h.IntentionallyStopped() {
-			fmt.Printf("[opd] %s stopped\n", id)
-			s.mu.Lock()
-			delete(s.servers, id)
-			s.mu.Unlock()
-			s.persistState()
-			return
-		}
-
-		fmt.Printf("[opd] %s crashed (exit %d), restarting in 5s...\n", id, exitCode)
-		time.Sleep(5 * time.Second)
-
-		newHandle, err := process.Spawn(cfg)
-		if err != nil {
-			fmt.Printf("[opd] failed to restart %s: %v\n", id, err)
-			s.mu.Lock()
-			delete(s.servers, id)
-			s.mu.Unlock()
-			s.persistState()
-			return
-		}
-
-		s.mu.Lock()
-		s.servers[id] = newHandle
-		s.mu.Unlock()
-		s.persistState()
-
-		fmt.Printf("[opd] %s restarted (pid %d)\n", id, newHandle.PID())
+// watch is the watchdog goroutine for a single server.
+// attempts tracks consecutive respawn failures for exponential backoff.
+func (s *Supervisor) watch(id string, cfg *config.ServerConfig, attempts int) {
+	s.mu.RLock()
+	h, ok := s.servers[id]
+	s.mu.RUnlock()
+	if !ok {
+		return
 	}
+
+	// Block until the process exits.
+	<-h.Done()
+
+	if h.IntentionallyStopped() {
+		// Clean stop — supervisor.Stop() already cleaned up.
+		return
+	}
+
+	// Crash — attempt respawn with capped exponential backoff.
+	if attempts >= maxRespawnAttempts {
+		fmt.Printf("[opd] %s crashed %d times consecutively, giving up\n", id, attempts)
+		s.mu.Lock()
+		delete(s.servers, id)
+		s.saveState()
+		s.mu.Unlock()
+		return
+	}
+
+	delay := time.Duration(1<<uint(attempts)) * time.Second // 1s, 2s, 4s, 8s, 16s
+	if delay > 30*time.Second {
+		delay = 30 * time.Second
+	}
+	fmt.Printf("[opd] %s crashed (exit %d), restarting in %s (attempt %d/%d)...\n",
+		id, h.ExitCode(), delay, attempts+1, maxRespawnAttempts)
+	time.Sleep(delay)
+
+	newHandle, err := process.Spawn(cfg)
+	if err != nil {
+		fmt.Printf("[opd] failed to respawn %s: %v\n", id, err)
+		s.mu.Lock()
+		delete(s.servers, id)
+		s.saveState()
+		s.mu.Unlock()
+		return
+	}
+
+	s.mu.Lock()
+	s.servers[id] = newHandle
+	s.saveState()
+	s.mu.Unlock()
+
+	fmt.Printf("[opd] %s restarted (pid %d)\n", id, newHandle.PID())
+	go s.watch(id, cfg, attempts+1) // new goroutine for new handle
 }
