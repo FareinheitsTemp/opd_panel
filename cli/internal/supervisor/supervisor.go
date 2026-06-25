@@ -8,6 +8,7 @@ import (
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/ipc"
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/supervisor/config"
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/supervisor/process"
+	"github.com/FareinheitsTemp/opd_panel/cli/internal/supervisor/state"
 )
 
 type Supervisor struct {
@@ -17,6 +18,21 @@ type Supervisor struct {
 
 func New() *Supervisor {
 	return &Supervisor{servers: make(map[string]*process.Handle)}
+}
+
+// RestoreState starts servers that were running before the daemon was last stopped.
+func (s *Supervisor) RestoreState() {
+	ids, err := state.Load()
+	if err != nil || len(ids) == 0 {
+		return
+	}
+	for _, id := range ids {
+		if err := s.Start(id); err != nil {
+			fmt.Printf("[opd] restore %s: %v\n", id, err)
+		} else {
+			fmt.Printf("[opd] restored %s\n", id)
+		}
+	}
 }
 
 func (s *Supervisor) Start(id string) error {
@@ -38,6 +54,7 @@ func (s *Supervisor) Start(id string) error {
 	}
 
 	s.servers[id] = h
+	s.persistState()
 	go s.watch(id, cfg)
 
 	return nil
@@ -50,7 +67,10 @@ func (s *Supervisor) Stop(id string) error {
 	if !ok {
 		return fmt.Errorf("server %s not found", id)
 	}
-	return h.Stop()
+	// Stop() blocks until process exits or 30s timeout
+	err := h.Stop()
+	s.persistState()
+	return err
 }
 
 func (s *Supervisor) Restart(id string) error {
@@ -60,11 +80,8 @@ func (s *Supervisor) Restart(id string) error {
 	if !ok {
 		return fmt.Errorf("server %s not found", id)
 	}
-	if err := h.Stop(); err != nil {
-		return err
-	}
-	// watchdog буде чекати виходу і перезапустить
-	return nil
+	// Stop blocks, then watchdog auto-restarts
+	return h.Stop()
 }
 
 func (s *Supervisor) SendCommand(id, cmd string) error {
@@ -120,10 +137,33 @@ func (s *Supervisor) List() []ipc.ServerInfo {
 
 func (s *Supervisor) StopAll() {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, h := range s.servers {
-		_ = h.Stop()
+	ids := make([]string, 0, len(s.servers))
+	for id := range s.servers {
+		ids = append(ids, id)
 	}
+	s.mu.RUnlock()
+
+	for _, id := range ids {
+		if err := s.Stop(id); err != nil {
+			fmt.Printf("[opd] stop %s: %v\n", id, err)
+		}
+	}
+	// Clear state on clean shutdown
+	_ = state.Save([]string{})
+}
+
+// persistState saves currently running server IDs to disk.
+// Must be called with no locks held (takes RLock internally).
+func (s *Supervisor) persistState() {
+	s.mu.RLock()
+	ids := make([]string, 0, len(s.servers))
+	for id, h := range s.servers {
+		if h.IsRunning() {
+			ids = append(ids, id)
+		}
+	}
+	s.mu.RUnlock()
+	_ = state.Save(ids)
 }
 
 func (s *Supervisor) watch(id string, cfg *config.ServerConfig) {
@@ -142,6 +182,7 @@ func (s *Supervisor) watch(id string, cfg *config.ServerConfig) {
 			s.mu.Lock()
 			delete(s.servers, id)
 			s.mu.Unlock()
+			s.persistState()
 			return
 		}
 
@@ -154,12 +195,14 @@ func (s *Supervisor) watch(id string, cfg *config.ServerConfig) {
 			s.mu.Lock()
 			delete(s.servers, id)
 			s.mu.Unlock()
+			s.persistState()
 			return
 		}
 
 		s.mu.Lock()
 		s.servers[id] = newHandle
 		s.mu.Unlock()
+		s.persistState()
 
 		fmt.Printf("[opd] %s restarted (pid %d)\n", id, newHandle.PID())
 	}

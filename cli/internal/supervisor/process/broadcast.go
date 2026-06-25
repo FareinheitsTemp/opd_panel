@@ -2,26 +2,26 @@ package process
 
 import "sync"
 
-// broadcast is a fan-out channel: one sender, multiple receivers.
+// broadcast fans out log lines from one writer to N subscribers.
 // Each subscriber gets its own buffered channel.
+// Slow subscribers drop messages instead of blocking the writer.
 type broadcast struct {
-	mu   sync.Mutex
-	subs []chan string
+	mu     sync.Mutex
+	subs   []chan string
 	closed bool
 }
 
-func newBroadcast(buf int) *broadcast {
-	_ = buf
+func newBroadcast() *broadcast {
 	return &broadcast{}
 }
 
 func (b *broadcast) subscribe() <-chan string {
-	ch := make(chan string, 256)
+	ch := make(chan string, 512)
 	b.mu.Lock()
-	if !b.closed {
-		b.subs = append(b.subs, ch)
-	} else {
+	if b.closed {
 		close(ch)
+	} else {
+		b.subs = append(b.subs, ch)
 	}
 	b.mu.Unlock()
 	return ch
@@ -34,7 +34,6 @@ func (b *broadcast) send(msg string) {
 		select {
 		case ch <- msg:
 		default:
-			// Drop if subscriber is slow
 		}
 	}
 }

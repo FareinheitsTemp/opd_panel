@@ -1,17 +1,16 @@
 package ipc
 
-// Message types sent over the Unix socket.
-// Each message is a newline-delimited JSON object.
-
 const (
 	// Client → Daemon
 	CmdList        = "list"
+	CmdListDisk    = "list_disk"
 	CmdStart       = "start"
 	CmdStop        = "stop"
 	CmdRestart     = "restart"
 	CmdSendCommand = "console"
 	CmdMetrics     = "metrics"
 	CmdStreamLogs  = "stream_logs"
+	CmdRemove      = "remove"
 
 	// Daemon → Client
 	RespOK    = "ok"
@@ -51,4 +50,12 @@ type MetricsInfo struct {
 	RAMMax   uint64  `json:"ram_max"`
 	CPU      float32 `json:"cpu"`
 	Uptime   uint64  `json:"uptime"`
+}
+
+type DiskServerInfo struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Port    int    `json:"port"`
+	RAMMax  int    `json:"ram_max_mb"`
+	Jar     string `json:"jar"`
 }

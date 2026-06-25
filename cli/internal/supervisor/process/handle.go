@@ -10,41 +10,38 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/shirou/gopsutil/v3/process"
+	gops "github.com/shirou/gopsutil/v3/process"
+
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/ipc"
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/supervisor/config"
 )
 
-const logBufSize = 1024
-
 type Handle struct {
-	cfg         *config.ServerConfig
-	cmd         *exec.Cmd
-	stdin       io.WriteCloser
+	cfg          *config.ServerConfig
+	cmd          *exec.Cmd
+	stdin        io.WriteCloser
 	logBroadcast *broadcast
-	exitCh      chan int
-	stopped     atomic.Bool
-	status      string
-	statusMu    sync.RWMutex
-	pid         int
+	exitCh       chan int
+	stopped      atomic.Bool
+	statusMu     sync.RWMutex
+	status       string
+	pid          int
 }
 
 func Spawn(cfg *config.ServerConfig) (*Handle, error) {
 	args := buildJavaArgs(cfg)
 	cmd := exec.Command("java", args...)
 	cmd.Dir = cfg.Dir
-	cmd.Env = append(os.Environ())
+	cmd.Env = os.Environ()
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
 	}
-
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
 	}
-
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return nil, err
@@ -58,17 +55,15 @@ func Spawn(cfg *config.ServerConfig) (*Handle, error) {
 		cfg:          cfg,
 		cmd:          cmd,
 		stdin:        stdin,
-		logBroadcast: newBroadcast(logBufSize),
+		logBroadcast: newBroadcast(),
 		exitCh:       make(chan int, 1),
 		pid:          cmd.Process.Pid,
 		status:       "starting",
 	}
 
-	// Pipe stdout and stderr into the broadcast
 	go h.pipeReader(stdout)
 	go h.pipeReader(stderr)
 
-	// Wait goroutine
 	go func() {
 		err := cmd.Wait()
 		code := 0
@@ -88,6 +83,7 @@ func Spawn(cfg *config.ServerConfig) (*Handle, error) {
 		h.exitCh <- code
 	}()
 
+	// Mark running only after pipes are set up
 	h.statusMu.Lock()
 	h.status = "running"
 	h.statusMu.Unlock()
@@ -107,12 +103,31 @@ func (h *Handle) SendCommand(cmd string) error {
 	return err
 }
 
+// Stop sends 'stop' to stdin and waits up to 30s for graceful exit,
+// then kills the process forcefully.
 func (h *Handle) Stop() error {
 	h.stopped.Store(true)
 	h.statusMu.Lock()
 	h.status = "stopping"
 	h.statusMu.Unlock()
-	return h.SendCommand("stop")
+
+	// Send stop command
+	_ = h.SendCommand("stop")
+
+	// Wait up to 30s for graceful shutdown
+	select {
+	case <-h.exitCh:
+		// Process exited cleanly — put the code back so Watch() can read it
+		// Actually we consumed it, so send 0 back
+		h.exitCh <- 0
+		return nil
+	case <-time.After(30 * time.Second):
+		// Force kill
+		if h.cmd.Process != nil {
+			_ = h.cmd.Process.Kill()
+		}
+		return nil
+	}
 }
 
 func (h *Handle) Wait() int {
@@ -125,26 +140,19 @@ func (h *Handle) IsRunning() bool {
 	return h.status == "running" || h.status == "starting"
 }
 
-func (h *Handle) IntentionallyStopped() bool {
-	return h.stopped.Load()
-}
-
+func (h *Handle) IntentionallyStopped() bool { return h.stopped.Load() }
 func (h *Handle) Status() string {
 	h.statusMu.RLock()
 	defer h.statusMu.RUnlock()
 	return h.status
 }
-
-func (h *Handle) PID() int  { return h.pid }
-func (h *Handle) Port() int { return h.cfg.Port }
-func (h *Handle) Name() string { return h.cfg.Name }
-
-func (h *Handle) SubscribeLogs() <-chan string {
-	return h.logBroadcast.subscribe()
-}
+func (h *Handle) PID() int        { return h.pid }
+func (h *Handle) Port() int       { return h.cfg.Port }
+func (h *Handle) Name() string    { return h.cfg.Name }
+func (h *Handle) SubscribeLogs() <-chan string { return h.logBroadcast.subscribe() }
 
 func (h *Handle) Metrics() *ipc.MetricsInfo {
-	p, err := process.NewProcess(int32(h.pid))
+	p, err := gops.NewProcess(int32(h.pid))
 	if err != nil {
 		return &ipc.MetricsInfo{
 			ServerID: h.cfg.ID,
@@ -160,7 +168,6 @@ func (h *Handle) Metrics() *ipc.MetricsInfo {
 	if mem != nil {
 		ramUsed = mem.RSS
 	}
-
 	var uptime uint64
 	if created > 0 {
 		uptime = uint64(time.Now().UnixMilli()/1000) - uint64(created/1000)

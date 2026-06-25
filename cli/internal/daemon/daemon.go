@@ -9,6 +9,7 @@ import (
 
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/ipc"
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/supervisor"
+	"github.com/FareinheitsTemp/opd_panel/cli/internal/supervisor/config"
 )
 
 const SocketPath = "/run/opd.sock"
@@ -20,20 +21,20 @@ type Daemon struct {
 }
 
 func New() (*Daemon, error) {
-	// Remove stale socket
 	_ = os.Remove(SocketPath)
 
 	l, err := net.Listen("unix", SocketPath)
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", SocketPath, err)
 	}
-
 	if err := os.Chmod(SocketPath, 0660); err != nil {
 		l.Close()
 		return nil, err
 	}
 
 	sup := supervisor.New()
+	sup.RestoreState() // restart servers that were running before daemon stopped
+
 	return &Daemon{listener: l, supervisor: sup}, nil
 }
 
@@ -41,7 +42,8 @@ func (d *Daemon) ListenAndServe() error {
 	for {
 		conn, err := d.listener.Accept()
 		if err != nil {
-			return err
+			// Listener closed = clean shutdown
+			return nil
 		}
 		go d.handleConn(conn)
 	}
@@ -56,9 +58,8 @@ func (d *Daemon) handleConn(conn net.Conn) {
 	defer conn.Close()
 
 	var req ipc.Request
-	dec := json.NewDecoder(conn)
-	if err := dec.Decode(&req); err != nil {
-		writeError(conn, "invalid request")
+	if err := json.NewDecoder(conn).Decode(&req); err != nil {
+		writeError(conn, "invalid request: "+err.Error())
 		return
 	}
 
@@ -66,36 +67,43 @@ func (d *Daemon) handleConn(conn net.Conn) {
 
 	switch req.Cmd {
 	case ipc.CmdList:
-		servers := d.supervisor.List()
-		_ = enc.Encode(ipc.Response{Type: ipc.RespData, Data: servers})
+		enc.Encode(ipc.Response{Type: ipc.RespData, Data: d.supervisor.List()})
+
+	case ipc.CmdListDisk:
+		servers, err := config.ListAll()
+		if err != nil {
+			writeError(conn, err.Error())
+			return
+		}
+		enc.Encode(ipc.Response{Type: ipc.RespData, Data: servers})
 
 	case ipc.CmdStart:
 		if err := d.supervisor.Start(req.ServerID); err != nil {
 			writeError(conn, err.Error())
 			return
 		}
-		_ = enc.Encode(ipc.Response{Type: ipc.RespOK, Message: fmt.Sprintf("starting %s", req.ServerID)})
+		enc.Encode(ipc.Response{Type: ipc.RespOK, Message: fmt.Sprintf("starting %s", req.ServerID)})
 
 	case ipc.CmdStop:
 		if err := d.supervisor.Stop(req.ServerID); err != nil {
 			writeError(conn, err.Error())
 			return
 		}
-		_ = enc.Encode(ipc.Response{Type: ipc.RespOK, Message: fmt.Sprintf("stopping %s", req.ServerID)})
+		enc.Encode(ipc.Response{Type: ipc.RespOK, Message: fmt.Sprintf("%s stopped", req.ServerID)})
 
 	case ipc.CmdRestart:
 		if err := d.supervisor.Restart(req.ServerID); err != nil {
 			writeError(conn, err.Error())
 			return
 		}
-		_ = enc.Encode(ipc.Response{Type: ipc.RespOK, Message: fmt.Sprintf("restarting %s", req.ServerID)})
+		enc.Encode(ipc.Response{Type: ipc.RespOK, Message: fmt.Sprintf("restarting %s", req.ServerID)})
 
 	case ipc.CmdSendCommand:
 		if err := d.supervisor.SendCommand(req.ServerID, req.Payload); err != nil {
 			writeError(conn, err.Error())
 			return
 		}
-		_ = enc.Encode(ipc.Response{Type: ipc.RespOK, Message: "sent"})
+		enc.Encode(ipc.Response{Type: ipc.RespOK, Message: "sent"})
 
 	case ipc.CmdMetrics:
 		m, err := d.supervisor.Metrics(req.ServerID)
@@ -103,10 +111,17 @@ func (d *Daemon) handleConn(conn net.Conn) {
 			writeError(conn, err.Error())
 			return
 		}
-		_ = enc.Encode(ipc.Response{Type: ipc.RespData, Data: m})
+		enc.Encode(ipc.Response{Type: ipc.RespData, Data: m})
+
+	case ipc.CmdRemove:
+		if err := config.Remove(req.ServerID); err != nil {
+			writeError(conn, err.Error())
+			return
+		}
+		enc.Encode(ipc.Response{Type: ipc.RespOK, Message: fmt.Sprintf("%s removed", req.ServerID)})
 
 	case ipc.CmdStreamLogs:
-		// Keep connection open and stream log lines
+		// Persistent connection — stream log lines until client disconnects
 		ch, err := d.supervisor.SubscribeLogs(req.ServerID)
 		if err != nil {
 			writeError(conn, err.Error())
@@ -114,7 +129,7 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		}
 		for line := range ch {
 			if err := enc.Encode(ipc.Response{Type: ipc.RespLog, Message: line}); err != nil {
-				return
+				return // client disconnected
 			}
 		}
 
@@ -124,6 +139,5 @@ func (d *Daemon) handleConn(conn net.Conn) {
 }
 
 func writeError(conn net.Conn, msg string) {
-	enc := json.NewEncoder(conn)
-	_ = enc.Encode(ipc.Response{Type: ipc.RespError, Message: msg})
+	json.NewEncoder(conn).Encode(ipc.Response{Type: ipc.RespError, Message: msg})
 }
