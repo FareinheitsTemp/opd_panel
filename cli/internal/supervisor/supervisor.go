@@ -3,10 +3,11 @@ package supervisor
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/ipc"
-	"github.com/FareinheitsTemp/opd_panel/cli/internal/supervisor/process"
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/supervisor/config"
+	"github.com/FareinheitsTemp/opd_panel/cli/internal/supervisor/process"
 )
 
 type Supervisor struct {
@@ -37,8 +38,6 @@ func (s *Supervisor) Start(id string) error {
 	}
 
 	s.servers[id] = h
-
-	// Auto-restart watchdog
 	go s.watch(id, cfg)
 
 	return nil
@@ -55,11 +54,17 @@ func (s *Supervisor) Stop(id string) error {
 }
 
 func (s *Supervisor) Restart(id string) error {
-	if err := s.Stop(id); err != nil {
+	s.mu.RLock()
+	h, ok := s.servers[id]
+	s.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("server %s not found", id)
+	}
+	if err := h.Stop(); err != nil {
 		return err
 	}
-	// Watchdog will auto-restart; or we can call Start explicitly
-	return s.Start(id)
+	// watchdog буде чекати виходу і перезапустить
+	return nil
 }
 
 func (s *Supervisor) SendCommand(id, cmd string) error {
@@ -121,7 +126,6 @@ func (s *Supervisor) StopAll() {
 	}
 }
 
-// watch restarts the server on unexpected exit.
 func (s *Supervisor) watch(id string, cfg *config.ServerConfig) {
 	for {
 		s.mu.RLock()
@@ -131,20 +135,25 @@ func (s *Supervisor) watch(id string, cfg *config.ServerConfig) {
 			return
 		}
 
-		// Block until process exits
 		exitCode := h.Wait()
 
 		if h.IntentionallyStopped() {
 			fmt.Printf("[opd] %s stopped\n", id)
+			s.mu.Lock()
+			delete(s.servers, id)
+			s.mu.Unlock()
 			return
 		}
 
 		fmt.Printf("[opd] %s crashed (exit %d), restarting in 5s...\n", id, exitCode)
-		waitSeconds(5)
+		time.Sleep(5 * time.Second)
 
 		newHandle, err := process.Spawn(cfg)
 		if err != nil {
 			fmt.Printf("[opd] failed to restart %s: %v\n", id, err)
+			s.mu.Lock()
+			delete(s.servers, id)
+			s.mu.Unlock()
 			return
 		}
 
@@ -154,8 +163,4 @@ func (s *Supervisor) watch(id string, cfg *config.ServerConfig) {
 
 		fmt.Printf("[opd] %s restarted (pid %d)\n", id, newHandle.PID())
 	}
-}
-
-func waitSeconds(n int) {
-	<-time.After(time.Duration(n) * time.Second)
 }

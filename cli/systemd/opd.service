@@ -1,0 +1,36 @@
+[Unit]
+Description=OPD Minecraft Server Manager Daemon
+After=network.target
+Documentation=https://github.com/FareinheitsTemp/opd_panel
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/opd daemon
+Restart=on-failure
+RestartSec=5s
+
+# Run as dedicated user for isolation
+User=opd
+Group=opd
+
+# Give access to the socket dir and servers dir
+RuntimeDirectory=opd
+RuntimeDirectoryMode=0750
+StateDirectory=opd
+StateDirectoryMode=0750
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/opd /run
+PrivateTmp=true
+PrivateDevices=true
+
+# Logs go to journald automatically
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=opd
+
+[Install]
+WantedBy=multi-user.target

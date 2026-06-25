@@ -22,6 +22,7 @@ func Execute() {
 
 func init() {
 	rootCmd.AddCommand(
+		addCmd,
 		daemonCmd,
 		startCmd,
 		stopCmd,

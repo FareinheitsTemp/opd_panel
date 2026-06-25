@@ -8,4 +8,5 @@ require (
 	github.com/charmbracelet/lipgloss v0.12.1
 	github.com/spf13/cobra v1.8.1
 	github.com/olekukonko/tablewriter v0.0.5
+	github.com/shirou/gopsutil/v3 v3.24.4
 )
