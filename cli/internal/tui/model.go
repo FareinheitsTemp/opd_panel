@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -61,11 +62,16 @@ type Model struct {
 	servers      []ipc.ServerInfo
 	cursor       int
 	curView      view
-	activeServer string // ID of server currently viewed in logs/console
+	activeServer string
 	logs         []string
 	input        string
 	width        int
 	height       int
+
+	// BUG FIX #5: track a cancel func for the active log stream goroutine.
+	// Previously switching views (l → esc → l again) spawned a second goroutine
+	// that kept pumping into m.program.Send forever — a goroutine leak.
+	logCancel context.CancelFunc
 }
 
 func NewModel(c *client.Client) *Model {
@@ -96,6 +102,14 @@ func (m *Model) selectedID() string {
 	return m.servers[m.cursor].ID
 }
 
+// cancelLogStream stops the current log goroutine if one is running.
+func (m *Model) cancelLogStream() {
+	if m.logCancel != nil {
+		m.logCancel()
+		m.logCancel = nil
+	}
+}
+
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
@@ -107,7 +121,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case serversMsg:
 		m.servers = []ipc.ServerInfo(msg)
-		// Clamp cursor safely.
 		if len(m.servers) == 0 {
 			m.cursor = 0
 		} else if m.cursor >= len(m.servers) {
@@ -138,6 +151,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
+		m.cancelLogStream()
 		return m, tea.Quit
 	case "up", "k":
 		if m.cursor > 0 {
@@ -161,6 +175,7 @@ func (m *Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "l":
 		if id := m.selectedID(); id != "" {
+			m.cancelLogStream() // stop previous stream before starting new
 			m.activeServer = id
 			m.curView = viewLogs
 			m.logs = nil
@@ -168,6 +183,7 @@ func (m *Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "c":
 		if id := m.selectedID(); id != "" {
+			m.cancelLogStream()
 			m.activeServer = id
 			m.curView = viewConsole
 			m.input = ""
@@ -180,6 +196,7 @@ func (m *Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) updateLogs(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "q" || msg.String() == "esc" {
+		m.cancelLogStream()
 		m.curView = viewList
 		m.logs = nil
 		m.activeServer = ""
@@ -190,6 +207,7 @@ func (m *Model) updateLogs(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) updateConsole(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
+		m.cancelLogStream()
 		m.curView = viewList
 		m.input = ""
 		m.activeServer = ""
@@ -215,19 +233,31 @@ func (m *Model) updateConsole(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// startLogStream opens a log subscription and pumps lines into the
-// bubbletea program via p.Send() — the only safe way to inject messages
-// from an external goroutine.
+// startLogStream opens a log subscription and pumps lines via p.Send().
+// Stores a cancel func in m.logCancel so it can be stopped on view switch.
 func (m *Model) startLogStream(id string) tea.Cmd {
 	return func() tea.Msg {
 		ch, err := m.client.StreamLogs(id)
 		if err != nil {
 			return nil
 		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		m.logCancel = cancel
+
 		go func() {
-			for line := range ch {
-				if m.program != nil {
-					m.program.Send(logLineMsg(line))
+			defer cancel()
+			for {
+				select {
+				case line, ok := <-ch:
+					if !ok {
+						return
+					}
+					if m.program != nil {
+						m.program.Send(logLineMsg(line))
+					}
+				case <-ctx.Done():
+					return
 				}
 			}
 		}()
@@ -296,7 +326,6 @@ func (m *Model) viewConsole() string {
 	return styleBorder.Render(sb.String())
 }
 
-// visibleLines returns the last n lines of m.logs, safe for any n.
 func (m *Model) visibleLines(n int) []string {
 	if n < 1 {
 		n = 1

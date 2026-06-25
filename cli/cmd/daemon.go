@@ -22,20 +22,32 @@ var daemonCmd = &cobra.Command{
 			return fmt.Errorf("failed to init daemon: %w", err)
 		}
 
+		// BUG FIX #6: os.Exit(1) inside the goroutine bypassed the deferred
+		// Shutdown() call, leaving all managed Java processes orphaned.
+		// Fix: use an error channel so the main goroutine handles the error
+		// and Shutdown() is always called via the defer path.
+		errCh := make(chan error, 1)
 		go func() {
-			if err := d.ListenAndServe(); err != nil {
-				fmt.Fprintf(os.Stderr, "daemon error: %v\n", err)
-				os.Exit(1)
-			}
+			errCh <- d.ListenAndServe()
 		}()
 
 		fmt.Printf("opd daemon running (socket: %s)\n", daemon.SocketPath)
 
 		quit := make(chan os.Signal, 1)
 		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-		<-quit
+		defer signal.Stop(quit)
 
-		fmt.Println("\nShutting down daemon...")
-		return d.Shutdown()
+		select {
+		case <-quit:
+			fmt.Println("\nShutting down daemon...")
+			return d.Shutdown()
+		case err := <-errCh:
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "daemon error: %v\n", err)
+				_ = d.Shutdown()
+				return err
+			}
+			return nil
+		}
 	},
 }

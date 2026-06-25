@@ -2,6 +2,7 @@ package state
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,7 +14,7 @@ import (
 const stateFile = "/var/lib/opd/daemon-state.json"
 
 type RunningState struct {
-	Servers []string `json:"servers"` // list of server IDs that were running
+	Servers []string `json:"servers"`
 }
 
 var mu sync.Mutex
@@ -38,17 +39,41 @@ func Load() ([]string, error) {
 	return s.Servers, nil
 }
 
+// Save writes state atomically: write to a temp file, then rename.
+// BUG FIX #7: the previous os.Create approach truncated the file first —
+// if the daemon crashed mid-write, the state file would be empty/corrupt.
+// os.Rename is atomic on POSIX systems, so the old state is always valid
+// until the new one is fully written.
 func Save(ids []string) error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	_ = os.MkdirAll(filepath.Dir(stateFile), 0755)
+	dir := filepath.Dir(stateFile)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
 
-	f, err := os.Create(stateFile)
+	tmp := stateFile + ".tmp"
+	f, err := os.Create(tmp)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 
-	return json.NewEncoder(f).Encode(RunningState{Servers: ids})
+	if err := json.NewEncoder(f).Encode(RunningState{Servers: ids}); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	f.Close()
+
+	if err := os.Rename(tmp, stateFile); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("atomic rename state: %w", err)
+	}
+	return nil
 }

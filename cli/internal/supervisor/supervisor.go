@@ -56,14 +56,13 @@ func (s *Supervisor) Start(id string) error {
 	}
 
 	s.servers[id] = h
-	s.saveState() // safe: called under mu.Lock() — saveState does NOT lock
+	s.saveState()
 	go s.watch(id, cfg, 0)
 
 	return nil
 }
 
-// Stop gracefully stops a server. Marks it as intentionally stopped so
-// watch() does not attempt a respawn.
+// Stop gracefully stops a server.
 func (s *Supervisor) Stop(id string) error {
 	s.mu.RLock()
 	h, ok := s.servers[id]
@@ -73,25 +72,25 @@ func (s *Supervisor) Stop(id string) error {
 		return fmt.Errorf("server %s not found", id)
 	}
 
-	// Mark stopped BEFORE calling h.Stop() so the goroutine in watch()
-	// sees the flag when doneCh fires.
 	h.MarkStopped()
 	if err := h.Stop(); err != nil {
 		return err
 	}
 
 	s.mu.Lock()
-	delete(s.servers, id)
+	// BUG FIX #4: saveState BEFORE deleting from map.
+	// The previous order deleted first, then saved — saveState would
+	// always see the server gone even if it was supposed to be in the list.
+	// Correct order: update state with the stopped handle still in the map
+	// (saveState filters by IsRunning, so it won't include it), THEN delete.
 	s.saveState()
+	delete(s.servers, id)
 	s.mu.Unlock()
 
 	return nil
 }
 
 // Restart gracefully stops then restarts a server.
-// Critically: we do NOT set h.MarkStopped() so watch() will respawn,
-// but we also don't rely on the old watch() — we stop it cleanly and
-// start a fresh one to avoid double-watch races.
 func (s *Supervisor) Restart(id string) error {
 	s.mu.RLock()
 	h, ok := s.servers[id]
@@ -106,12 +105,9 @@ func (s *Supervisor) Restart(id string) error {
 		return err
 	}
 
-	// Stop old process cleanly — mark it intentionally stopped
-	// so the OLD watch() goroutine exits.
 	h.MarkStopped()
 	_ = h.Stop()
 
-	// Spawn fresh process
 	newH, err := process.Spawn(cfg)
 	if err != nil {
 		s.mu.Lock()
@@ -191,7 +187,6 @@ func (s *Supervisor) List() []ipc.ServerInfo {
 
 // StopAll stops every running server concurrently and clears state.
 func (s *Supervisor) StopAll() {
-	// Snapshot IDs under lock, then release before blocking Stop() calls.
 	s.mu.RLock()
 	ids := make([]string, 0, len(s.servers))
 	for id := range s.servers {
@@ -214,8 +209,8 @@ func (s *Supervisor) StopAll() {
 	_ = state.Save([]string{})
 }
 
-// saveState persists currently running IDs to disk.
-// MUST be called while mu is already held (Lock or RLock) — does NOT lock itself.
+// saveState persists currently running IDs.
+// MUST be called while mu is already held — does NOT lock itself.
 func (s *Supervisor) saveState() {
 	ids := make([]string, 0, len(s.servers))
 	for id, h := range s.servers {
@@ -227,8 +222,14 @@ func (s *Supervisor) saveState() {
 }
 
 // watch is the watchdog goroutine for a single server.
-// attempts tracks consecutive respawn failures for exponential backoff.
+// BUG FIX #3: the respawn attempt counter was never reset after a successful
+// run. A server that crashed → restarted → ran for hours → crashed again
+// would still be on attempt N+1 of 5. Fix: reset counter after a
+// configurable "stable" duration (30s), meaning the process is considered
+// healthy and subsequent crashes start fresh.
 func (s *Supervisor) watch(id string, cfg *config.ServerConfig, attempts int) {
+	const stableAfter = 30 * time.Second
+
 	s.mu.RLock()
 	h, ok := s.servers[id]
 	s.mu.RUnlock()
@@ -236,15 +237,27 @@ func (s *Supervisor) watch(id string, cfg *config.ServerConfig, attempts int) {
 		return
 	}
 
-	// Block until the process exits.
-	<-h.Done()
+	// Reset attempt counter if the process survives stableAfter.
+	if attempts > 0 {
+		select {
+		case <-time.After(stableAfter):
+			attempts = 0 // process survived — treat next crash as first
+		case <-h.Done():
+			// Exited before stable — fall through with current attempts
+		}
+	}
+
+	// Block until process exits (if not already done from above).
+	select {
+	case <-h.Done():
+	default:
+		<-h.Done()
+	}
 
 	if h.IntentionallyStopped() {
-		// Clean stop — supervisor.Stop() already cleaned up.
 		return
 	}
 
-	// Crash — attempt respawn with capped exponential backoff.
 	if attempts >= maxRespawnAttempts {
 		fmt.Printf("[opd] %s crashed %d times consecutively, giving up\n", id, attempts)
 		s.mu.Lock()
@@ -254,7 +267,7 @@ func (s *Supervisor) watch(id string, cfg *config.ServerConfig, attempts int) {
 		return
 	}
 
-	delay := time.Duration(1<<uint(attempts)) * time.Second // 1s, 2s, 4s, 8s, 16s
+	delay := time.Duration(1<<uint(attempts)) * time.Second
 	if delay > 30*time.Second {
 		delay = 30 * time.Second
 	}
@@ -278,5 +291,5 @@ func (s *Supervisor) watch(id string, cfg *config.ServerConfig, attempts int) {
 	s.mu.Unlock()
 
 	fmt.Printf("[opd] %s restarted (pid %d)\n", id, newHandle.PID())
-	go s.watch(id, cfg, attempts+1) // new goroutine for new handle
+	go s.watch(id, cfg, attempts+1)
 }

@@ -24,14 +24,10 @@ type Handle struct {
 	logBroadcast *broadcast
 
 	// doneCh is closed exactly once when the process exits.
-	// exitCode carries the process exit code.
-	// Using a separate doneCh avoids the race in Stop() where
-	// we had to put the code back onto exitCh for Watch().
 	doneCh   chan struct{}
 	exitCode int
 
-	// stopped is set to true ONLY by an intentional Stop().
-	// watch() uses this to distinguish crash from graceful stop.
+	// stopped is set to true ONLY by an intentional MarkStopped() call.
 	stopped atomic.Bool
 
 	statusMu sync.RWMutex
@@ -69,7 +65,10 @@ func Spawn(cfg *config.ServerConfig) (*Handle, error) {
 		logBroadcast: newBroadcast(),
 		doneCh:       make(chan struct{}),
 		pid:          cmd.Process.Pid,
-		status:       "starting",
+		// BUG FIX #1: set status to "running" HERE, before goroutines are
+		// launched, not after. The previous code set it after — creating a
+		// window where IsRunning() returned false for a live process.
+		status: "running",
 	}
 
 	go h.pipeReader(stdout)
@@ -93,12 +92,8 @@ func Spawn(cfg *config.ServerConfig) (*Handle, error) {
 		h.statusMu.Unlock()
 
 		h.logBroadcast.close()
-		close(h.doneCh) // signal to both Stop() and watch() simultaneously
+		close(h.doneCh)
 	}()
-
-	h.statusMu.Lock()
-	h.status = "running"
-	h.statusMu.Unlock()
 
 	return h, nil
 }
@@ -116,8 +111,7 @@ func (h *Handle) SendCommand(cmd string) error {
 }
 
 // Stop sends 'stop' to stdin and waits up to 30 s for graceful exit,
-// then kills the process. Does NOT set h.stopped — that is the caller's
-// responsibility (Supervisor.Stop sets it; Supervisor.Restart must NOT).
+// then kills the process. Does NOT set h.stopped — caller's responsibility.
 func (h *Handle) Stop() error {
 	h.statusMu.Lock()
 	h.status = "stopping"
@@ -132,18 +126,18 @@ func (h *Handle) Stop() error {
 		if h.cmd.Process != nil {
 			_ = h.cmd.Process.Kill()
 		}
-		<-h.doneCh // wait for goroutine to finish after kill
+		<-h.doneCh
 		return nil
 	}
 }
 
-// Done returns a channel that is closed when the process exits.
+// Done returns a channel closed when the process exits.
 func (h *Handle) Done() <-chan struct{} { return h.doneCh }
 
 // ExitCode is safe to read only after Done() is closed.
 func (h *Handle) ExitCode() int { return h.exitCode }
 
-func (h *Handle) MarkStopped()             { h.stopped.Store(true) }
+func (h *Handle) MarkStopped()              { h.stopped.Store(true) }
 func (h *Handle) IntentionallyStopped() bool { return h.stopped.Load() }
 
 func (h *Handle) IsRunning() bool {
@@ -158,12 +152,21 @@ func (h *Handle) Status() string {
 	return h.status
 }
 
-func (h *Handle) PID() int           { return h.pid }
-func (h *Handle) Port() int          { return h.cfg.Port }
-func (h *Handle) Name() string       { return h.cfg.Name }
+func (h *Handle) PID() int                    { return h.pid }
+func (h *Handle) Port() int                   { return h.cfg.Port }
+func (h *Handle) Name() string                { return h.cfg.Name }
 func (h *Handle) SubscribeLogs() <-chan string { return h.logBroadcast.subscribe() }
 
 func (h *Handle) Metrics() *ipc.MetricsInfo {
+	// BUG FIX #2: if the process is already stopped, gopsutil will query
+	// a dead PID which can match a recycled OS process — return zeros instead.
+	if !h.IsRunning() {
+		return &ipc.MetricsInfo{
+			ServerID: h.cfg.ID,
+			RAMMax:   uint64(h.cfg.RAMMaxMB) * 1024 * 1024,
+		}
+	}
+
 	p, err := gops.NewProcess(int32(h.pid))
 	if err != nil {
 		return &ipc.MetricsInfo{
