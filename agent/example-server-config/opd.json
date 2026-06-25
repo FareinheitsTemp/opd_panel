@@ -1,0 +1,8 @@
+{
+  "name": "Survival SMP",
+  "port": 25565,
+  "ram_min_mb": 1024,
+  "ram_max_mb": 4096,
+  "java_flags": [],
+  "jar": "paper.jar"
+}
