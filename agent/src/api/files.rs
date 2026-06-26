@@ -8,7 +8,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
 
 use super::AppState;
 
@@ -31,11 +30,9 @@ fn server_root(id: &str) -> PathBuf {
 
 fn safe_path(base: &PathBuf, rel: &str) -> Option<PathBuf> {
     let joined = base.join(rel.trim_start_matches('/'));
-    // Prevent path traversal
     if joined.starts_with(base) { Some(joined) } else { None }
 }
 
-// GET /servers/:id/files?path=/plugins
 pub async fn list(
     Path(id): Path<String>,
     Query(q): Query<PathQuery>,
@@ -69,7 +66,6 @@ pub async fn list(
     Json(entries).into_response()
 }
 
-// GET /servers/:id/files/content?path=/server.properties
 pub async fn read(
     Path(id): Path<String>,
     Query(q): Query<PathQuery>,
@@ -93,7 +89,6 @@ pub struct WriteBody {
     pub content: String,
 }
 
-// PUT /servers/:id/files/content
 pub async fn write(
     Path(id): Path<String>,
     _state: State<AppState>,
@@ -118,7 +113,6 @@ pub struct DeleteBody {
     pub path: String,
 }
 
-// DELETE /servers/:id/files
 pub async fn delete(
     Path(id): Path<String>,
     _state: State<AppState>,
@@ -145,7 +139,6 @@ pub struct MkdirBody {
     pub path: String,
 }
 
-// POST /servers/:id/files/mkdir
 pub async fn mkdir(
     Path(id): Path<String>,
     _state: State<AppState>,
@@ -162,7 +155,6 @@ pub async fn mkdir(
     }
 }
 
-// POST /servers/:id/files/upload  (multipart)
 pub async fn upload(
     Path(id): Path<String>,
     _state: State<AppState>,
@@ -191,7 +183,6 @@ pub async fn upload(
     Json(serde_json::json!({"uploaded": uploaded})).into_response()
 }
 
-// GET /servers/:id/files/download?path=/world.zip
 pub async fn download(
     Path(id): Path<String>,
     Query(q): Query<PathQuery>,
@@ -217,7 +208,6 @@ pub async fn download(
     }
 }
 
-// POST /servers/:id/files/compress
 #[derive(Deserialize)]
 pub struct CompressBody {
     pub paths: Vec<String>,
@@ -248,7 +238,6 @@ pub async fn compress(
     }
 }
 
-// POST /servers/:id/files/decompress
 #[derive(Deserialize)]
 pub struct DecompressBody {
     pub path: String,
