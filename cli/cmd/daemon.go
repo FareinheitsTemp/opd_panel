@@ -4,46 +4,63 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 
-	"github.com/spf13/cobra"
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/daemon"
+	"github.com/spf13/cobra"
 )
 
 var daemonCmd = &cobra.Command{
 	Use:   "daemon",
-	Short: "Start the OPD supervisor daemon",
-	Long:  `Starts the background daemon that manages server processes.\nListens on TCP 127.0.0.1:51200 for CLI commands.`,
+	Short: "Start the OPD background daemon",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("Starting opd daemon...")
-
 		d, err := daemon.New()
 		if err != nil {
-			return fmt.Errorf("failed to init daemon: %w", err)
+			return fmt.Errorf("init daemon: %w", err)
 		}
 
-		errCh := make(chan error, 1)
-		go func() {
-			errCh <- d.ListenAndServe()
-		}()
+		fmt.Println("[opd] daemon started")
+		fmt.Println("[opd] IPC listening on 127.0.0.1:51200")
+		fmt.Println("[opd] Web UI API listening on http://127.0.0.1:51201")
+		fmt.Println("[opd] Open http://localhost:3000 in your browser for the web UI")
 
-		fmt.Printf("opd daemon running (tcp: %s)\n", daemon.TCPAddr)
+		// Auto-open browser
+		openBrowser("http://localhost:3000")
 
-		// os.Interrupt works on both Windows and Unix (unlike syscall.SIGTERM)
 		quit := make(chan os.Signal, 1)
 		signal.Notify(quit, os.Interrupt)
-		defer signal.Stop(quit)
+		<-quit
 
-		select {
-		case <-quit:
-			fmt.Println("\nShutting down daemon...")
-			return d.Shutdown()
-		case err := <-errCh:
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "daemon error: %v\n", err)
-				_ = d.Shutdown()
-				return err
-			}
-			return nil
-		}
+		fmt.Println("[opd] shutting down...")
+		return d.Shutdown()
 	},
+}
+
+func openBrowser(url string) {
+	var err error
+	switch runtime.GOOS {
+	case "windows":
+		err = runCmd("cmd", "/c", "start", url)
+	case "darwin":
+		err = runCmd("open", url)
+	default:
+		err = runCmd("xdg-open", url)
+	}
+	if err != nil {
+		fmt.Printf("[opd] could not open browser automatically: %v\n", err)
+		fmt.Printf("[opd] open manually: %s\n", url)
+	}
+}
+
+func runCmd(name string, args ...string) error {
+	import_exec := func() error {
+		import "os/exec"
+		return exec.Command(name, args...).Start()
+	}
+	_ = import_exec
+	return execStart(name, args...)
+}
+
+func init() {
+	rootCmd.AddCommand(daemonCmd)
 }

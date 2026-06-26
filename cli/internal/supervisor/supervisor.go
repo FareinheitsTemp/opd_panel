@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -48,6 +49,13 @@ func (s *Supervisor) Start(id string) error {
 	cfg, err := config.Load(id)
 	if err != nil {
 		return fmt.Errorf("load config for %s: %w", id, err)
+	}
+
+	// Check that the jar file actually exists before trying to spawn.
+	if _, err := os.Stat(cfg.JarPath); os.IsNotExist(err) {
+		return fmt.Errorf("jar file not found: %s — place your server.jar in the server directory first", cfg.JarPath)
+	} else if err != nil {
+		return fmt.Errorf("cannot access jar file %s: %w", cfg.JarPath, err)
 	}
 
 	h, err := process.Spawn(cfg)
@@ -100,6 +108,11 @@ func (s *Supervisor) Restart(id string) error {
 		return err
 	}
 
+	// Check jar still exists before restarting.
+	if _, err := os.Stat(cfg.JarPath); os.IsNotExist(err) {
+		return fmt.Errorf("jar file not found: %s", cfg.JarPath)
+	}
+
 	h.MarkStopped()
 	_ = h.Stop()
 
@@ -115,9 +128,6 @@ func (s *Supervisor) Restart(id string) error {
 	s.mu.Lock()
 	s.servers[id] = newH
 	s.saveState()
-	// BUG FIX #10: launch watch() while mu is still held, matching Start().
-	// Launching it after Unlock() left a window where a concurrent Restart()
-	// or Stop() could register a second watchdog for the same server ID.
 	go s.watch(id, cfg, 0)
 	s.mu.Unlock()
 
@@ -208,7 +218,6 @@ func (s *Supervisor) StopAll() {
 }
 
 // saveState persists currently running IDs.
-// MUST be called while mu is already held — does NOT lock itself.
 func (s *Supervisor) saveState() {
 	ids := make([]string, 0, len(s.servers))
 	for id, h := range s.servers {
@@ -219,12 +228,6 @@ func (s *Supervisor) saveState() {
 	_ = state.Save(ids)
 }
 
-// watch is the watchdog goroutine for a single server.
-// BUG FIX #3: the respawn attempt counter was never reset after a successful
-// run. A server that crashed → restarted → ran for hours → crashed again
-// would still be on attempt N+1 of 5. Fix: reset counter after a
-// configurable "stable" duration (30s), meaning the process is considered
-// healthy and subsequent crashes start fresh.
 func (s *Supervisor) watch(id string, cfg *config.ServerConfig, attempts int) {
 	const stableAfter = 30 * time.Second
 
@@ -235,17 +238,14 @@ func (s *Supervisor) watch(id string, cfg *config.ServerConfig, attempts int) {
 		return
 	}
 
-	// Reset attempt counter if the process survives stableAfter.
 	if attempts > 0 {
 		select {
 		case <-time.After(stableAfter):
 			attempts = 0
 		case <-h.Done():
-			// Exited before stable — fall through with current attempts
 		}
 	}
 
-	// Block until process exits (if not already done from above).
 	select {
 	case <-h.Done():
 	default:

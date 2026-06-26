@@ -6,18 +6,19 @@ import (
 	"net"
 	"sync"
 
+	"github.com/FareinheitsTemp/opd_panel/cli/internal/httpapi"
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/ipc"
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/supervisor"
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/supervisor/config"
 )
 
-// TCPAddr is the address the daemon listens on.
-// Using TCP instead of Unix sockets for cross-platform compatibility (Windows).
+// TCPAddr is the address the IPC daemon listens on.
 const TCPAddr = "127.0.0.1:51200"
 
 type Daemon struct {
 	listener   net.Listener
 	supervisor *supervisor.Supervisor
+	httpSrv    *httpapi.Server
 	mu         sync.Mutex
 	shutdown   bool
 	connWg     sync.WaitGroup
@@ -32,10 +33,23 @@ func New() (*Daemon, error) {
 	sup := supervisor.New()
 	sup.RestoreState()
 
-	return &Daemon{listener: l, supervisor: sup}, nil
+	httpSrv := httpapi.New(sup)
+
+	return &Daemon{
+		listener:   l,
+		supervisor: sup,
+		httpSrv:    httpSrv,
+	}, nil
 }
 
 func (d *Daemon) ListenAndServe() error {
+	// Start HTTP API in background
+	go func() {
+		if err := d.httpSrv.Start(); err != nil {
+			fmt.Printf("[opd-http] error: %v\n", err)
+		}
+	}()
+
 	for {
 		conn, err := d.listener.Accept()
 		if err != nil {
@@ -60,6 +74,7 @@ func (d *Daemon) Shutdown() error {
 	d.shutdown = true
 	d.mu.Unlock()
 
+	d.httpSrv.Shutdown()
 	listenerErr := d.listener.Close()
 	d.supervisor.StopAll()
 	d.connWg.Wait()
