@@ -26,6 +26,10 @@ pub struct HistoryPoint {
 
 pub type SharedMetrics = Arc<Mutex<MetricsCollector>>;
 
+pub fn new_shared() -> SharedMetrics {
+    Arc::new(Mutex::new(MetricsCollector::new()))
+}
+
 pub struct MetricsCollector {
     sys: System,
     history: HashMap<String, Vec<HistoryPoint>>,
@@ -64,7 +68,6 @@ impl MetricsCollector {
             .or_default()
             .push(point);
 
-        // Keep last 60 points
         let h = self.history.get_mut(server_id).unwrap();
         if h.len() > 60 { h.drain(0..h.len() - 60); }
 

@@ -16,6 +16,27 @@ pub struct ServerConfig {
     pub extra_flags: Vec<String>,
 }
 
+impl ServerConfig {
+    /// Returns the working directory as a PathBuf
+    pub fn dir(&self) -> PathBuf {
+        PathBuf::from(&self.work_dir)
+    }
+
+    /// Builds the full Java argument list for spawning the server process
+    pub fn java_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        args.push(format!("-Xms{}M", self.ram_min_mb));
+        args.push(format!("-Xmx{}M", self.ram_max_mb));
+        for flag in &self.extra_flags {
+            args.push(flag.clone());
+        }
+        args.push("-jar".to_string());
+        args.push(self.jar_file.clone());
+        args.push("--nogui".to_string());
+        args
+    }
+}
+
 pub fn config_path(id: &str) -> PathBuf {
     PathBuf::from(format!("/opt/opd/servers/{}/opd.json", id))
 }
