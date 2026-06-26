@@ -1,5 +1,3 @@
-// Package httpapi provides the HTTP REST + SSE API for the OPD web UI.
-// Listens on 127.0.0.1:51201 (separate from the IPC port 51200).
 package httpapi
 
 import (
@@ -7,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +42,7 @@ func New(sup *supervisor.Supervisor) *Server {
 	}
 
 	mux.HandleFunc("/api/servers", withCORS(s.handleListServers))
+	mux.HandleFunc("/api/servers/create", withCORS(s.handleCreateServer))
 	mux.HandleFunc("/api/servers/", withCORS(s.handleServerAction))
 	mux.HandleFunc("/ws/logs/", s.handleSSELogs)
 	mux.HandleFunc("/api/health", withCORS(func(w http.ResponseWriter, r *http.Request) {
@@ -67,7 +68,6 @@ func (s *Server) Shutdown() {
 	s.httpServer.Close()
 }
 
-// ServerEntry is the JSON shape sent to the web UI.
 type ServerEntry struct {
 	ID      string  `json:"id"`
 	Name    string  `json:"name"`
@@ -139,6 +139,97 @@ func (s *Server) handleListServers(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(entries)
 }
 
+// POST /api/servers/create
+type createServerRequest struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Port     int    `json:"port"`
+	RAMMinMB int    `json:"ram_min_mb"`
+	RAMMaxMB int    `json:"ram_max_mb"`
+	Jar      string `json:"jar"`
+}
+
+type serverConfigJSON struct {
+	Name      string   `json:"name"`
+	Port      int      `json:"port"`
+	RAMMinMB  int      `json:"ram_min_mb"`
+	RAMMaxMB  int      `json:"ram_max_mb"`
+	Jar       string   `json:"jar"`
+	JavaFlags []string `json:"java_flags"`
+}
+
+func (s *Server) handleCreateServer(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req createServerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Validate
+	if req.ID == "" || strings.ContainsAny(req.ID, " /\\:*?\"<>|") {
+		http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Port < 1 || req.Port > 65535 {
+		http.Error(w, `{"error":"invalid port"}`, http.StatusBadRequest)
+		return
+	}
+	if req.RAMMinMB <= 0 { req.RAMMinMB = 1024 }
+	if req.RAMMaxMB <= 0 { req.RAMMaxMB = 4096 }
+	if req.Jar == "" { req.Jar = "server.jar" }
+	if req.Name == "" { req.Name = req.ID }
+
+	dir := filepath.Join(config.ServersRoot, req.ID)
+	configPath := filepath.Join(dir, "opd.json")
+
+	if _, err := os.Stat(configPath); err == nil {
+		http.Error(w, `{"error":"server already exists"}`, http.StatusConflict)
+		return
+	}
+
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	cfg := serverConfigJSON{
+		Name:      req.Name,
+		Port:      req.Port,
+		RAMMinMB:  req.RAMMinMB,
+		RAMMaxMB:  req.RAMMaxMB,
+		Jar:       req.Jar,
+		JavaFlags: []string{},
+	}
+
+	f, err := os.Create(configPath)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	defer f.Close()
+
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(cfg); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{
+		"ok":  "true",
+		"dir": dir,
+	})
+}
+
 // POST /api/servers/:id/start|stop|restart|command
 func (s *Server) handleServerAction(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -189,7 +280,7 @@ func (s *Server) handleServerAction(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"ok": "true"})
 }
 
-// GET /ws/logs/:id — Server-Sent Events log stream
+// GET /ws/logs/:id — SSE
 func (s *Server) handleSSELogs(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/ws/logs/")
 	if id == "" {

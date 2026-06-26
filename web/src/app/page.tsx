@@ -1,10 +1,10 @@
 'use client'
 
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 
 const API = 'http://127.0.0.1:51201'
 
-interface Server {
+interface ServerEntry {
   id: string
   name: string
   status: string
@@ -17,273 +17,158 @@ interface Server {
   jar: string
 }
 
-function formatBytes(mb: number) {
-  if (mb < 1024) return `${mb} MB`
-  return `${(mb / 1024).toFixed(1)} GB`
+function fmtRam(bytes: number) {
+  if (!bytes) return '0 MB'
+  return (bytes / 1024 / 1024).toFixed(0) + ' MB'
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    running: 'text-green-400',
-    stopped: 'text-gray-500',
-    crashed: 'text-red-400',
-    starting: 'text-yellow-400',
-  }
+function StatusDot({ status }: { status: string }) {
+  const color =
+    status === 'running' ? '#22c55e' :
+    status === 'starting' ? '#f59e0b' :
+    status === 'stopping' ? '#f97316' : '#6b7280'
   return (
-    <span className={`flex items-center gap-1.5 text-xs font-mono uppercase tracking-wider ${colors[status] ?? 'text-gray-400'}`}>
-      <span className={`status-dot ${status}`} />
-      {status}
-    </span>
+    <span style={{
+      display: 'inline-block', width: 8, height: 8,
+      borderRadius: '50%', background: color,
+      boxShadow: status === 'running' ? `0 0 6px ${color}` : 'none',
+      marginRight: 8, flexShrink: 0,
+    }} />
   )
 }
 
-function LogViewer({ serverId, serverName }: { serverId: string; serverName: string }) {
-  const [logs, setLogs] = useState<string[]>([])
-  const [cmd, setCmd] = useState('')
-  const bottomRef = useRef<HTMLDivElement>(null)
-  const esRef = useRef<EventSource | null>(null)
-
-  useEffect(() => {
-    setLogs([])
-    if (esRef.current) esRef.current.close()
-
-    const es = new EventSource(`${API}/ws/logs/${serverId}`)
-    esRef.current = es
-    es.onmessage = (e) => {
-      setLogs(prev => [...prev.slice(-500), e.data])
-    }
-    es.onerror = () => {
-      setLogs(prev => [...prev, '[connection lost — server may be stopped]'])
-    }
-    return () => es.close()
-  }, [serverId])
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [logs])
-
-  const sendCmd = async () => {
-    if (!cmd.trim()) return
-    await fetch(`${API}/api/servers/${serverId}/command`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cmd }),
-    })
-    setCmd('')
-  }
-
-  const classifyLine = (line: string) => {
-    const l = line.toLowerCase()
-    if (l.includes('warn')) return 'warn'
-    if (l.includes('error') || l.includes('exception') || l.includes('fatal')) return 'error'
-    if (l.includes('joined the game') || l.includes('logged in')) return 'join'
-    if (l.includes('info')) return 'info'
-    return ''
-  }
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{
-        flex: 1,
-        overflowY: 'auto',
-        background: '#0d0d0d',
-        border: '1px solid rgba(193,20,20,0.2)',
-        borderRadius: '8px 8px 0 0',
-        padding: '12px',
-        minHeight: 0,
-      }}>
-        {logs.length === 0 ? (
-          <p style={{ color: '#555', fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}>
-            Waiting for logs from {serverName}...
-          </p>
-        ) : (
-          logs.map((line, i) => (
-            <div key={i} className={`log-line ${classifyLine(line)}`}>{line}</div>
-          ))
-        )}
-        <div ref={bottomRef} />
-      </div>
-      <div style={{
-        display: 'flex',
-        gap: 8,
-        padding: '8px',
-        background: '#111',
-        border: '1px solid rgba(193,20,20,0.2)',
-        borderTop: 'none',
-        borderRadius: '0 0 8px 8px',
-      }}>
-        <span style={{ color: '#c11414', fontFamily: 'monospace', lineHeight: '34px', fontSize: 14 }}>{'>'}</span>
-        <input
-          value={cmd}
-          onChange={e => setCmd(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && sendCmd()}
-          placeholder="Enter server command..."
-          style={{
-            flex: 1,
-            background: 'transparent',
-            border: 'none',
-            outline: 'none',
-            color: '#f0f0f0',
-            fontFamily: 'JetBrains Mono, monospace',
-            fontSize: 13,
-          }}
-        />
-        <button
-          onClick={sendCmd}
-          style={{
-            background: '#c11414',
-            color: 'white',
-            border: 'none',
-            borderRadius: 6,
-            padding: '6px 16px',
-            cursor: 'pointer',
-            fontSize: 13,
-            fontWeight: 500,
-            transition: 'background 150ms',
-          }}
-          onMouseOver={e => (e.currentTarget.style.background = '#e51d1d')}
-          onMouseOut={e => (e.currentTarget.style.background = '#c11414')}
-        >
-          Send
-        </button>
-      </div>
-    </div>
-  )
+interface AddServerModalProps {
+  onClose: () => void
+  onCreated: () => void
 }
 
-function ServerCard({
-  server,
-  selected,
-  onSelect,
-  onAction,
-}: {
-  server: Server
-  selected: boolean
-  onSelect: () => void
-  onAction: (action: string) => void
-}) {
-  const ramPct = server.ram_max > 0
-    ? Math.round((server.ram_used / 1024 / 1024 / server.ram_max) * 100)
-    : 0
+function AddServerModal({ onClose, onCreated }: AddServerModalProps) {
+  const [form, setForm] = useState({
+    id: '', name: '', port: '25565',
+    ram_min_mb: '1024', ram_max_mb: '4096', jar: 'server.jar',
+  })
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [created, setCreated] = useState<string | null>(null)
+
+  const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm(f => ({ ...f, [k]: e.target.value }))
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    setError('')
+    setLoading(true)
+    try {
+      const res = await fetch(`${API}/api/servers/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: form.id.trim(),
+          name: form.name.trim() || form.id.trim(),
+          port: parseInt(form.port),
+          ram_min_mb: parseInt(form.ram_min_mb),
+          ram_max_mb: parseInt(form.ram_max_mb),
+          jar: form.jar.trim() || 'server.jar',
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) { setError(data.error || 'Unknown error'); return }
+      setCreated(data.dir)
+      onCreated()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Connection failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '8px 12px',
+    background: '#1a1a1a', border: '1px solid #333',
+    borderRadius: 6, color: '#e0e0e0', fontSize: 14,
+    outline: 'none',
+  }
+  const labelStyle: React.CSSProperties = {
+    display: 'block', fontSize: 12,
+    color: '#888', marginBottom: 4, fontWeight: 500,
+  }
 
   return (
-    <div
-      onClick={onSelect}
-      style={{
-        background: selected ? 'rgba(193,20,20,0.1)' : '#111',
-        border: selected ? '1px solid rgba(193,20,20,0.5)' : '1px solid rgba(255,255,255,0.06)',
-        borderRadius: 10,
-        padding: '14px 16px',
-        cursor: 'pointer',
-        transition: 'all 200ms',
-        animation: 'fadeIn 0.3s ease-in-out',
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-        <div>
-          <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>{server.name}</div>
-          <div style={{ color: '#555', fontSize: 11, fontFamily: 'monospace' }}>{server.id}</div>
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      zIndex: 1000,
+    }} onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{
+        background: '#111', border: '1px solid #2a2a2a',
+        borderRadius: 12, padding: 28, width: 440, maxWidth: '95vw',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <h2 style={{ color: '#e0e0e0', fontSize: 18, fontWeight: 600 }}>Add Server</h2>
+          <button onClick={onClose} style={{ color: '#666', fontSize: 20, cursor: 'pointer', background: 'none', border: 'none' }}>×</button>
         </div>
-        <StatusBadge status={server.status} />
-      </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
-        <div style={{ background: '#0d0d0d', borderRadius: 6, padding: '8px 10px' }}>
-          <div style={{ color: '#555', fontSize: 11, marginBottom: 2 }}>PORT</div>
-          <div style={{ fontFamily: 'monospace', fontSize: 13 }}>{server.port}</div>
-        </div>
-        <div style={{ background: '#0d0d0d', borderRadius: 6, padding: '8px 10px' }}>
-          <div style={{ color: '#555', fontSize: 11, marginBottom: 2 }}>CPU</div>
-          <div style={{ fontFamily: 'monospace', fontSize: 13 }}>{server.cpu.toFixed(1)}%</div>
-        </div>
-        <div style={{ background: '#0d0d0d', borderRadius: 6, padding: '8px 10px' }}>
-          <div style={{ color: '#555', fontSize: 11, marginBottom: 2 }}>RAM</div>
-          <div style={{ fontFamily: 'monospace', fontSize: 13 }}>
-            {formatBytes(Math.round(server.ram_used / 1024 / 1024))} / {server.ram_max}MB
+        {created ? (
+          <div>
+            <div style={{ color: '#22c55e', marginBottom: 12, fontSize: 15 }}>✔ Server created!</div>
+            <div style={{ background: '#1a1a1a', borderRadius: 6, padding: '10px 14px', color: '#aaa', fontSize: 13, marginBottom: 16 }}>
+              Place your <code style={{ color: '#e0e0e0' }}>{form.jar}</code> in:<br />
+              <code style={{ color: '#c084fc', wordBreak: 'break-all' }}>{created}</code>
+            </div>
+            <button onClick={onClose} style={{
+              width: '100%', padding: '9px 0',
+              background: '#7f1d1d', color: '#fff', border: 'none',
+              borderRadius: 6, cursor: 'pointer', fontSize: 14, fontWeight: 600,
+            }}>Close</button>
           </div>
-        </div>
-        <div style={{ background: '#0d0d0d', borderRadius: 6, padding: '8px 10px' }}>
-          <div style={{ color: '#555', fontSize: 11, marginBottom: 2 }}>UPTIME</div>
-          <div style={{ fontFamily: 'monospace', fontSize: 13 }}>{server.uptime || '—'}</div>
-        </div>
-      </div>
-
-      {server.ram_max > 0 && (
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ background: '#1a1a1a', borderRadius: 4, height: 4, overflow: 'hidden' }}>
-            <div style={{
-              width: `${Math.min(ramPct, 100)}%`,
-              height: '100%',
-              background: ramPct > 80 ? '#ef4444' : ramPct > 60 ? '#eab308' : '#c11414',
-              borderRadius: 4,
-              transition: 'width 500ms',
-            }} />
-          </div>
-        </div>
-      )}
-
-      <div style={{ display: 'flex', gap: 6 }} onClick={e => e.stopPropagation()}>
-        {server.status !== 'running' ? (
-          <button
-            onClick={() => onAction('start')}
-            style={{
-              flex: 1,
-              background: '#c11414',
-              color: 'white',
-              border: 'none',
-              borderRadius: 6,
-              padding: '7px 0',
-              cursor: 'pointer',
-              fontSize: 13,
-              fontWeight: 500,
-              transition: 'background 150ms',
-            }}
-            onMouseOver={e => (e.currentTarget.style.background = '#e51d1d')}
-            onMouseOut={e => (e.currentTarget.style.background = '#c11414')}
-          >
-            ▶ Start
-          </button>
         ) : (
-          <>
-            <button
-              onClick={() => onAction('restart')}
-              style={{
-                flex: 1,
-                background: 'rgba(234,179,8,0.15)',
-                color: '#eab308',
-                border: '1px solid rgba(234,179,8,0.3)',
-                borderRadius: 6,
-                padding: '7px 0',
-                cursor: 'pointer',
-                fontSize: 13,
-                fontWeight: 500,
-                transition: 'background 150ms',
-              }}
-              onMouseOver={e => (e.currentTarget.style.background = 'rgba(234,179,8,0.25)')}
-              onMouseOut={e => (e.currentTarget.style.background = 'rgba(234,179,8,0.15)')}
-            >
-              ↺ Restart
+          <form onSubmit={submit}>
+            <div style={{ display: 'grid', gap: 14 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div>
+                  <label style={labelStyle}>Server ID *</label>
+                  <input style={inputStyle} value={form.id} onChange={set('id')}
+                    placeholder="survival" required pattern="[a-zA-Z0-9_-]+" />
+                </div>
+                <div>
+                  <label style={labelStyle}>Display Name</label>
+                  <input style={inputStyle} value={form.name} onChange={set('name')} placeholder="Survival" />
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div>
+                  <label style={labelStyle}>Port</label>
+                  <input style={inputStyle} type="number" value={form.port} onChange={set('port')} min={1} max={65535} />
+                </div>
+                <div>
+                  <label style={labelStyle}>Jar filename</label>
+                  <input style={inputStyle} value={form.jar} onChange={set('jar')} placeholder="server.jar" />
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div>
+                  <label style={labelStyle}>Min RAM (MB)</label>
+                  <input style={inputStyle} type="number" value={form.ram_min_mb} onChange={set('ram_min_mb')} min={128} />
+                </div>
+                <div>
+                  <label style={labelStyle}>Max RAM (MB)</label>
+                  <input style={inputStyle} type="number" value={form.ram_max_mb} onChange={set('ram_max_mb')} min={256} />
+                </div>
+              </div>
+            </div>
+
+            {error && <div style={{ color: '#f87171', fontSize: 13, marginTop: 12 }}>✗ {error}</div>}
+
+            <button type="submit" disabled={loading} style={{
+              marginTop: 18, width: '100%', padding: '10px 0',
+              background: loading ? '#4a0a0a' : '#7f1d1d',
+              color: loading ? '#888' : '#fff',
+              border: 'none', borderRadius: 6, cursor: loading ? 'not-allowed' : 'pointer',
+              fontSize: 14, fontWeight: 600, transition: 'background 0.15s',
+            }}>
+              {loading ? 'Creating...' : 'Create Server'}
             </button>
-            <button
-              onClick={() => onAction('stop')}
-              style={{
-                flex: 1,
-                background: 'rgba(239,68,68,0.12)',
-                color: '#ef4444',
-                border: '1px solid rgba(239,68,68,0.25)',
-                borderRadius: 6,
-                padding: '7px 0',
-                cursor: 'pointer',
-                fontSize: 13,
-                fontWeight: 500,
-                transition: 'background 150ms',
-              }}
-              onMouseOver={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.22)')}
-              onMouseOut={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.12)')}
-            >
-              ■ Stop
-            </button>
-          </>
+          </form>
         )}
       </div>
     </div>
@@ -291,26 +176,25 @@ function ServerCard({
 }
 
 export default function Home() {
-  const [servers, setServers] = useState<Server[]>([])
-  const [selected, setSelected] = useState<Server | null>(null)
+  const [servers, setServers] = useState<ServerEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [toast, setToast] = useState<string | null>(null)
-
-  const showToast = (msg: string) => {
-    setToast(msg)
-    setTimeout(() => setToast(null), 3000)
-  }
+  const [selected, setSelected] = useState<string | null>(null)
+  const [logs, setLogs] = useState<string[]>([])
+  const [cmd, setCmd] = useState('')
+  const [showAdd, setShowAdd] = useState(false)
+  const logsEndRef = useRef<HTMLDivElement>(null)
+  const sseRef = useRef<EventSource | null>(null)
 
   const fetchServers = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/servers`)
-      if (!res.ok) throw new Error('daemon unreachable')
-      const data = await res.json()
+      const r = await fetch(`${API}/api/servers`)
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const data = await r.json()
       setServers(data)
       setError(null)
-    } catch {
-      setError('Cannot connect to OPD daemon. Is it running?')
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Connection failed')
     } finally {
       setLoading(false)
     }
@@ -318,200 +202,215 @@ export default function Home() {
 
   useEffect(() => {
     fetchServers()
-    const interval = setInterval(fetchServers, 3000)
-    return () => clearInterval(interval)
+    const t = setInterval(fetchServers, 3000)
+    return () => clearInterval(t)
   }, [fetchServers])
 
-  const handleAction = async (serverId: string, action: string) => {
-    try {
-      const res = await fetch(`${API}/api/servers/${serverId}/${action}`, { method: 'POST' })
-      const data = await res.json()
-      if (data.error) showToast(`Error: ${data.error}`)
-      else showToast(`${action} sent to ${serverId}`)
-      setTimeout(fetchServers, 500)
-    } catch {
-      showToast('Failed to send command')
-    }
+  useEffect(() => {
+    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [logs])
+
+  function selectServer(id: string) {
+    setSelected(id)
+    setLogs([])
+    sseRef.current?.close()
+    const es = new EventSource(`${API}/ws/logs/${id}`)
+    es.onmessage = e => setLogs(prev => [...prev.slice(-500), e.data])
+    sseRef.current = es
   }
+
+  async function action(id: string, act: string) {
+    await fetch(`${API}/api/servers/${id}/${act}`, { method: 'POST' })
+    setTimeout(fetchServers, 500)
+  }
+
+  async function sendCmd(id: string) {
+    if (!cmd.trim()) return
+    await fetch(`${API}/api/servers/${id}/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd }),
+    })
+    setCmd('')
+  }
+
+  const sel = servers.find(s => s.id === selected)
 
   return (
     <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      height: '100dvh',
-      background: '#0a0a0a',
-      color: '#f0f0f0',
+      minHeight: '100vh', background: '#0a0a0a',
+      color: '#e0e0e0', fontFamily: "'Inter', system-ui, sans-serif",
+      display: 'flex', flexDirection: 'column',
     }}>
       {/* Header */}
       <header style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '0 24px',
-        height: 56,
-        borderBottom: '1px solid rgba(193,20,20,0.25)',
+        borderBottom: '1px solid #1e1e1e', padding: '14px 24px',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         background: '#0d0d0d',
-        flexShrink: 0,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          {/* SVG Logo */}
-          <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-            <rect width="28" height="28" rx="6" fill="#c11414" />
-            <path d="M7 14L14 7L21 14L14 21L7 14Z" fill="white" fillOpacity="0.9" />
-            <circle cx="14" cy="14" r="3" fill="#c11414" />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+            <rect x="2" y="2" width="9" height="9" rx="1.5" fill="#dc2626"/>
+            <rect x="13" y="2" width="9" height="9" rx="1.5" fill="#dc2626" opacity=".6"/>
+            <rect x="2" y="13" width="9" height="9" rx="1.5" fill="#dc2626" opacity=".6"/>
+            <rect x="13" y="13" width="9" height="9" rx="1.5" fill="#dc2626" opacity=".3"/>
           </svg>
-          <span style={{ fontWeight: 700, fontSize: 16, letterSpacing: '-0.3px' }}>OPD Panel</span>
-          <span style={{
-            background: 'rgba(193,20,20,0.15)',
-            color: '#c11414',
-            border: '1px solid rgba(193,20,20,0.3)',
-            borderRadius: 4,
-            padding: '2px 7px',
-            fontSize: 11,
-            fontFamily: 'monospace',
-            letterSpacing: '0.5px',
-          }}>BETA</span>
+          <span style={{ fontWeight: 700, fontSize: 16, letterSpacing: '-0.02em' }}>opd panel</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <span style={{ color: '#555', fontSize: 12, fontFamily: 'monospace' }}>
-            {servers.length} server{servers.length !== 1 ? 's' : ''}
-          </span>
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            color: error ? '#ef4444' : '#22c55e',
-            fontSize: 12,
-          }}>
-            <span className={`status-dot ${error ? 'crashed' : 'running'}`} />
-            {error ? 'daemon offline' : 'daemon online'}
-          </div>
-        </div>
+        <button
+          onClick={() => setShowAdd(true)}
+          style={{
+            background: '#7f1d1d', color: '#fff', border: 'none',
+            borderRadius: 6, padding: '7px 14px', cursor: 'pointer',
+            fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6,
+          }}
+        >
+          <span style={{ fontSize: 18, lineHeight: 1 }}>+</span> Add Server
+        </button>
       </header>
 
-      {/* Main layout */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        {/* Left sidebar — server list */}
+        {/* Sidebar */}
         <aside style={{
-          width: 300,
-          flexShrink: 0,
-          borderRight: '1px solid rgba(255,255,255,0.06)',
-          display: 'flex',
-          flexDirection: 'column',
-          background: '#0d0d0d',
+          width: 280, borderRight: '1px solid #1e1e1e',
+          overflowY: 'auto', background: '#0d0d0d',
+          display: 'flex', flexDirection: 'column',
         }}>
-          <div style={{
-            padding: '14px 16px 10px',
-            borderBottom: '1px solid rgba(255,255,255,0.04)',
-            fontSize: 11,
-            color: '#555',
-            letterSpacing: '0.8px',
-            textTransform: 'uppercase',
-            fontWeight: 600,
-          }}>Servers</div>
-
-          <div style={{ flex: 1, overflowY: 'auto', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {loading && (
-              <div style={{ color: '#555', fontSize: 13, padding: '20px 0', textAlign: 'center' }}>Loading...</div>
-            )}
-            {error && (
-              <div style={{
-                background: 'rgba(239,68,68,0.08)',
-                border: '1px solid rgba(239,68,68,0.2)',
-                borderRadius: 8,
-                padding: 14,
-                color: '#ef4444',
-                fontSize: 13,
-              }}>
-                ⚠ {error}
-              </div>
-            )}
-            {!loading && !error && servers.length === 0 && (
-              <div style={{ color: '#555', fontSize: 13, padding: '20px 0', textAlign: 'center', lineHeight: 1.8 }}>
-                No servers found.<br />
-                <span style={{ fontSize: 12 }}>Run <code style={{ color: '#c11414' }}>opd create</code> to add one.</span>
-              </div>
-            )}
-            {servers.map(s => (
-              <ServerCard
-                key={s.id}
-                server={s}
-                selected={selected?.id === s.id}
-                onSelect={() => setSelected(s)}
-                onAction={(action) => handleAction(s.id, action)}
-              />
-            ))}
+          <div style={{ padding: '12px 16px 8px', fontSize: 11, color: '#555', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+            Servers {servers.length > 0 && `(${servers.length})`}
           </div>
+
+          {loading && (
+            <div style={{ padding: '20px 16px', color: '#555', fontSize: 13 }}>Connecting to daemon...</div>
+          )}
+          {error && (
+            <div style={{ padding: '12px 16px', color: '#f87171', fontSize: 12 }}>
+              ✗ {error}<br />
+              <span style={{ color: '#555' }}>Is opd daemon running?</span>
+            </div>
+          )}
+          {!loading && !error && servers.length === 0 && (
+            <div style={{ padding: '16px', color: '#555', fontSize: 13 }}>
+              No servers yet.<br />
+              <button onClick={() => setShowAdd(true)} style={{
+                marginTop: 8, color: '#dc2626', background: 'none',
+                border: 'none', cursor: 'pointer', fontSize: 13, padding: 0,
+              }}>+ Add your first server</button>
+            </div>
+          )}
+
+          {servers.map(srv => (
+            <button key={srv.id} onClick={() => selectServer(srv.id)}
+              style={{
+                display: 'flex', alignItems: 'center', width: '100%',
+                padding: '10px 16px', background: selected === srv.id ? '#1a1a1a' : 'none',
+                border: 'none', borderLeft: selected === srv.id ? '2px solid #dc2626' : '2px solid transparent',
+                cursor: 'pointer', textAlign: 'left', transition: 'background 0.1s',
+              }}
+            >
+              <StatusDot status={srv.status} />
+              <div style={{ overflow: 'hidden' }}>
+                <div style={{ color: '#e0e0e0', fontSize: 14, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {srv.name}
+                </div>
+                <div style={{ color: '#555', fontSize: 11 }}>{srv.id} · :{srv.port}</div>
+              </div>
+            </button>
+          ))}
         </aside>
 
-        {/* Right panel — logs */}
-        <main style={{
-          flex: 1,
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-          background: '#0a0a0a',
-        }}>
-          {selected ? (
-            <>
-              <div style={{
-                padding: '12px 20px',
-                borderBottom: '1px solid rgba(255,255,255,0.05)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 12,
-                flexShrink: 0,
-              }}>
-                <StatusBadge status={selected.status} />
-                <span style={{ fontWeight: 600, fontSize: 15 }}>{selected.name}</span>
-                <span style={{ color: '#555', fontSize: 12, fontFamily: 'monospace' }}>:{selected.port}</span>
-                <span style={{ marginLeft: 'auto', color: '#555', fontSize: 12 }}>Live logs</span>
-              </div>
-              <div style={{ flex: 1, padding: '12px 16px', overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                <LogViewer serverId={selected.id} serverName={selected.name} />
-              </div>
-            </>
+        {/* Main */}
+        <main style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
+          {!sel ? (
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#333', flexDirection: 'column', gap: 8 }}>
+              <span style={{ fontSize: 40 }}>⬛</span>
+              <span style={{ fontSize: 14 }}>Select a server</span>
+            </div>
           ) : (
-            <div style={{
-              flex: 1,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: '#333',
-              gap: 12,
-            }}>
-              <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-                <rect width="48" height="48" rx="12" fill="rgba(193,20,20,0.08)" />
-                <path d="M16 24L24 16L32 24L24 32L16 24Z" stroke="#c11414" strokeWidth="1.5" fill="none" />
-                <circle cx="24" cy="24" r="4" stroke="#c11414" strokeWidth="1.5" fill="none" />
-              </svg>
-              <p style={{ fontSize: 14 }}>Select a server to view logs</p>
-              <p style={{ fontSize: 12, color: '#222' }}>Click any server card on the left</p>
+            <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+              {/* Server Header */}
+              <div style={{ padding: '16px 24px', borderBottom: '1px solid #1e1e1e', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <StatusDot status={sel.status} />
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 16 }}>{sel.name}</div>
+                    <div style={{ color: '#555', fontSize: 12 }}>{sel.id} · port {sel.port} · {sel.status}</div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {sel.status !== 'running' && sel.status !== 'starting' && (
+                    <button onClick={() => action(sel.id, 'start')} style={btnStyle('#166534', '#22c55e')}>Start</button>
+                  )}
+                  {(sel.status === 'running' || sel.status === 'starting') && (
+                    <button onClick={() => action(sel.id, 'restart')} style={btnStyle('#78350f', '#f59e0b')}>Restart</button>
+                  )}
+                  {(sel.status === 'running' || sel.status === 'starting') && (
+                    <button onClick={() => action(sel.id, 'stop')} style={btnStyle('#7f1d1d', '#f87171')}>Stop</button>
+                  )}
+                </div>
+              </div>
+
+              {/* Stats */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 1, borderBottom: '1px solid #1e1e1e', background: '#1e1e1e' }}>
+                {[
+                  ['RAM Used', fmtRam(sel.ram_used)],
+                  ['RAM Max', fmtRam(sel.ram_max)],
+                  ['CPU', `${sel.cpu.toFixed(1)}%`],
+                  ['Uptime', sel.uptime || '—'],
+                ].map(([label, val]) => (
+                  <div key={label} style={{ background: '#0d0d0d', padding: '12px 16px' }}>
+                    <div style={{ color: '#555', fontSize: 11, marginBottom: 4 }}>{label}</div>
+                    <div style={{ color: '#e0e0e0', fontSize: 15, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{val}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Logs */}
+              <div style={{ flex: 1, overflowY: 'auto', background: '#060606', fontFamily: 'monospace', fontSize: 12, padding: '12px 16px', lineHeight: 1.6 }}>
+                {logs.length === 0 ? (
+                  <span style={{ color: '#333' }}>No logs yet. Start the server or select a running server.</span>
+                ) : (
+                  logs.map((l, i) => <div key={i} style={{ color: l.includes('ERROR') || l.includes('WARN') ? '#f87171' : '#9ca3af' }}>{l}</div>)
+                )}
+                <div ref={logsEndRef} />
+              </div>
+
+              {/* Console input */}
+              {sel.status === 'running' && (
+                <div style={{ padding: '10px 16px', borderTop: '1px solid #1e1e1e', display: 'flex', gap: 8 }}>
+                  <span style={{ color: '#555', fontFamily: 'monospace', fontSize: 13, alignSelf: 'center' }}>{'>'}</span>
+                  <input
+                    value={cmd}
+                    onChange={e => setCmd(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && sendCmd(sel.id)}
+                    placeholder="say Hello, world!"
+                    style={{
+                      flex: 1, background: 'none', border: 'none', outline: 'none',
+                      color: '#e0e0e0', fontFamily: 'monospace', fontSize: 13,
+                    }}
+                  />
+                  <button onClick={() => sendCmd(sel.id)} style={btnStyle('#1e1e1e', '#555')}>Send</button>
+                </div>
+              )}
             </div>
           )}
         </main>
       </div>
 
-      {/* Toast */}
-      {toast && (
-        <div style={{
-          position: 'fixed',
-          bottom: 24,
-          right: 24,
-          background: '#181818',
-          border: '1px solid rgba(193,20,20,0.4)',
-          borderRadius: 8,
-          padding: '10px 18px',
-          fontSize: 13,
-          color: '#f0f0f0',
-          boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
-          zIndex: 1000,
-          animation: 'fadeIn 0.2s ease-in-out',
-        }}>
-          {toast}
-        </div>
+      {showAdd && (
+        <AddServerModal
+          onClose={() => setShowAdd(false)}
+          onCreated={() => { fetchServers(); }}
+        />
       )}
     </div>
   )
+}
+
+function btnStyle(bg: string, color: string): React.CSSProperties {
+  return {
+    background: bg, color, border: `1px solid ${color}33`,
+    borderRadius: 6, padding: '6px 14px', cursor: 'pointer',
+    fontSize: 13, fontWeight: 500,
+  }
 }
