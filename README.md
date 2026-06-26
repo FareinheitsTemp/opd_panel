@@ -1,67 +1,81 @@
-# OPD Panel
+# OPD — Minecraft Server Process Manager
 
-> Open Panel Daemon — lightweight self-hosted Minecraft server manager
+A lightweight CLI daemon for managing Minecraft server processes.  
+Built with Go. Works on **Windows**, Linux, and macOS.
 
-CLI-first, zero web UI. Runs on the same machine as your Minecraft servers.
-Go daemon + Rust agent + interactive CLI.
+## Requirements
 
-## Architecture
+- [Go 1.22+](https://go.dev/dl/)
+- Java 17+ (for running Minecraft servers)
 
+## Install
+
+### Windows (PowerShell)
+
+```powershell
+git clone https://github.com/FareinheitsTemp/opd_panel.git
+cd opd_panel\cli
+go mod tidy
+go build -o opd.exe .
+
+# Add opd to PATH permanently (run once, then restart terminal)
+$dir = "$env:USERPROFILE\AppData\Local\Programs\opd"
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+Copy-Item .\opd.exe "$dir\opd.exe"
+[Environment]::SetEnvironmentVariable("Path", $env:Path + ";$dir", "User")
 ```
-[opd CLI] <──Unix Socket──> [opdd daemon] <──localhost HTTP──> [opd-agent (Rust)]
-                                                                       │
-                                                              [Java Minecraft Servers]
-                                                                       │
-                                                              [Playit.gg Tunnel]
-```
 
-## Stack
+Restart your terminal — `opd` now works from anywhere.
 
-- **Go** — daemon (`opdd`), CLI (`opd`), version manager, tunnel integrations
-- **Rust** — process supervisor, metrics, log streaming, backups
-- **SQLite** — embedded database (no external deps for MVP)
-- **cgroups v2** — RAM/CPU isolation without Docker
-- **bubbletea** — interactive TUI console
-- **Playit.gg** — free public tunnel (no port forwarding needed)
-
-## Quick Start
+### Linux / macOS
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/FareinheitsTemp/opd_panel/main/scripts/install.sh | bash
+git clone https://github.com/FareinheitsTemp/opd_panel.git
+cd opd_panel
+make install
 ```
 
-## CLI Reference
+Or manually:
 
 ```bash
-opd server list
-opd server create --name paper-1 --type paper --version 1.21.4 --ram 2048
-opd server start paper-1
-opd server stop paper-1
-opd server console paper-1          # interactive bubbletea console
-opd server logs paper-1 --follow
-opd backup create paper-1
-opd backup list paper-1
-opd versions list --type paper
-opd tunnel attach paper-1
+cd cli && go mod tidy && go build -o opd .
+sudo cp opd /usr/local/bin/opd
 ```
 
-## Supported Server Types
+## Usage
 
-| Type | Source |
-|------|--------|
-| Vanilla | Mojang Piston API |
-| Paper | PaperMC API v2 |
-| Purpur | PurpurMC API |
-| Fabric | FabricMC Meta API |
-| Forge/NeoForge | Phase 2 |
+**Step 1 — Start the daemon** (keep open, or run in background):
+```
+opd daemon
+```
 
-## Roadmap
+**Step 2 — Add a server:**
+```
+opd add my-server
+```
+Then place your `server.jar` in the shown directory.
 
-- [ ] Phase 1 — Core (daemon, agent, CLI, SQLite)
-- [ ] Phase 2 — Networking (Playit.gg, DuckDNS)
-- [ ] Phase 3 — Comfort (backups, metrics, auto-download jars)
-- [ ] Phase 4 — Scale (multi-node, gRPC, plugin system)
+**Step 3 — Control servers:**
+```
+opd start my-server
+opd stop my-server
+opd restart my-server
+opd status
+opd logs my-server
+opd metrics my-server
+opd console my-server
+opd tui
+opd list
+opd remove my-server
+```
 
-## License
+## Data Directory
 
-MIT
+| OS | Path |
+|---|---|
+| Windows | `%APPDATA%\opd\servers\` |
+| Linux / macOS | `/var/lib/opd/servers/` |
+
+## IPC
+
+The daemon listens on **TCP `127.0.0.1:51200`** — no Unix sockets, works everywhere.

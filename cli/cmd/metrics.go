@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -44,12 +43,12 @@ var metricsCmd = &cobra.Command{
 			return printMetrics()
 		}
 
-		// Watch mode: refresh every N seconds
 		ticker := time.NewTicker(time.Duration(metricsInterval) * time.Second)
 		defer ticker.Stop()
 
 		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		signal.Notify(sig, os.Interrupt)
+		defer signal.Stop(sig)
 
 		_ = printMetrics()
 		for {

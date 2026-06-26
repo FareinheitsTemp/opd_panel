@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -30,7 +29,6 @@ var consoleCmd = &cobra.Command{
 			return fmt.Errorf("could not attach log stream: %w", err)
 		}
 
-		// Log printer — exits when ctx is cancelled OR logCh is closed.
 		go func() {
 			for {
 				select {
@@ -48,7 +46,7 @@ var consoleCmd = &cobra.Command{
 		fmt.Printf("[opd] Attached to %s console. Ctrl+C to detach.\n> ", serverID)
 
 		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		signal.Notify(sig, os.Interrupt)
 		defer signal.Stop(sig)
 
 		inputDone := make(chan struct{})
@@ -76,7 +74,7 @@ var consoleCmd = &cobra.Command{
 		case <-inputDone:
 		}
 
-		cancel() // stop log printer goroutine
+		cancel()
 		fmt.Println("\n[opd] Detached.")
 		return nil
 	},

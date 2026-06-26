@@ -11,15 +11,15 @@ import (
 )
 
 type Client struct {
-	socketPath string
+	addr string
 }
 
 func New() *Client {
-	return &Client{socketPath: daemon.SocketPath}
+	return &Client{addr: daemon.TCPAddr}
 }
 
 func (c *Client) send(req ipc.Request) (*ipc.Response, error) {
-	conn, err := net.Dial("unix", c.socketPath)
+	conn, err := net.Dial("tcp", c.addr)
 	if err != nil {
 		return nil, fmt.Errorf("cannot connect to opd daemon (is it running?): %w", err)
 	}
@@ -85,9 +85,9 @@ func (c *Client) Metrics(id string) (*ipc.MetricsInfo, error) {
 	return &m, json.Unmarshal(b, &m)
 }
 
-// StreamLogs opens a persistent connection and streams log lines.
+// StreamLogs opens a persistent TCP connection and streams log lines.
 func (c *Client) StreamLogs(id string) (<-chan string, error) {
-	conn, err := net.Dial("unix", c.socketPath)
+	conn, err := net.Dial("tcp", c.addr)
 	if err != nil {
 		return nil, fmt.Errorf("cannot connect to opd daemon: %w", err)
 	}

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/client"
@@ -22,7 +21,8 @@ var logsCmd = &cobra.Command{
 		}
 
 		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		signal.Notify(sig, os.Interrupt)
+		defer signal.Stop(sig)
 
 		for {
 			select {

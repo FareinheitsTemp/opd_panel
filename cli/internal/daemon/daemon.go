@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"os"
 	"sync"
 
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/ipc"
@@ -12,29 +11,22 @@ import (
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/supervisor/config"
 )
 
-const SocketPath = "/run/opd.sock"
+// TCPAddr is the address the daemon listens on.
+// Using TCP instead of Unix sockets for cross-platform compatibility (Windows).
+const TCPAddr = "127.0.0.1:51200"
 
 type Daemon struct {
 	listener   net.Listener
 	supervisor *supervisor.Supervisor
 	mu         sync.Mutex
 	shutdown   bool
-	// BUG FIX #9: track active handleConn goroutines so Shutdown() can wait
-	// for them all to finish before returning. Without this, StreamLogs
-	// goroutines could outlive the supervisor and write to closed channels.
-	connWg sync.WaitGroup
+	connWg     sync.WaitGroup
 }
 
 func New() (*Daemon, error) {
-	_ = os.Remove(SocketPath)
-
-	l, err := net.Listen("unix", SocketPath)
+	l, err := net.Listen("tcp", TCPAddr)
 	if err != nil {
-		return nil, fmt.Errorf("listen on %s: %w", SocketPath, err)
-	}
-	if err := os.Chmod(SocketPath, 0660); err != nil {
-		l.Close()
-		return nil, err
+		return nil, fmt.Errorf("listen on %s: %w", TCPAddr, err)
 	}
 
 	sup := supervisor.New()
@@ -55,7 +47,6 @@ func (d *Daemon) ListenAndServe() error {
 			}
 			return err
 		}
-		// BUG FIX #9: count every connection so Shutdown() can wait.
 		d.connWg.Add(1)
 		go func() {
 			defer d.connWg.Done()
@@ -69,15 +60,8 @@ func (d *Daemon) Shutdown() error {
 	d.shutdown = true
 	d.mu.Unlock()
 
-	// Close the listener first so ListenAndServe() returns.
 	listenerErr := d.listener.Close()
-
-	// Stop all managed servers — this closes broadcast channels, which
-	// unblocks any StreamLogs handleConn goroutines.
 	d.supervisor.StopAll()
-
-	// BUG FIX #9: wait for all active connection goroutines to exit before
-	// returning. Prevents use-after-free / writes to closed resources.
 	d.connWg.Wait()
 
 	return listenerErr

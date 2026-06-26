@@ -5,11 +5,28 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/ipc"
 )
 
-const ServersRoot = "/var/lib/opd/servers"
+// serversRoot returns the OS-appropriate data directory.
+//
+//	Windows:      %APPDATA%\opd\servers
+//	Linux/macOS:  /var/lib/opd/servers
+func serversRoot() string {
+	if runtime.GOOS == "windows" {
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			appData = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Roaming")
+		}
+		return filepath.Join(appData, "opd", "servers")
+	}
+	return "/var/lib/opd/servers"
+}
+
+// ServersRoot is the resolved path to the servers directory.
+var ServersRoot = serversRoot()
 
 type ServerConfig struct {
 	ID        string
@@ -64,7 +81,7 @@ func ListAll() ([]ipc.DiskServerInfo, error) {
 		}
 		cfg, err := Load(e.Name())
 		if err != nil {
-			continue // skip dirs without opd.json
+			continue
 		}
 		out = append(out, ipc.DiskServerInfo{
 			ID:     cfg.ID,
@@ -78,7 +95,6 @@ func ListAll() ([]ipc.DiskServerInfo, error) {
 }
 
 // Remove deletes the server config directory.
-// Refuses if the directory contains a running process (caller should stop first).
 func Remove(id string) error {
 	dir := filepath.Join(ServersRoot, id)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
