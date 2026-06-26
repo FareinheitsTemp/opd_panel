@@ -19,6 +19,10 @@ type Daemon struct {
 	supervisor *supervisor.Supervisor
 	mu         sync.Mutex
 	shutdown   bool
+	// BUG FIX #9: track active handleConn goroutines so Shutdown() can wait
+	// for them all to finish before returning. Without this, StreamLogs
+	// goroutines could outlive the supervisor and write to closed channels.
+	connWg sync.WaitGroup
 }
 
 func New() (*Daemon, error) {
@@ -47,12 +51,16 @@ func (d *Daemon) ListenAndServe() error {
 			shutdown := d.shutdown
 			d.mu.Unlock()
 			if shutdown {
-				// Clean shutdown — not an error
 				return nil
 			}
 			return err
 		}
-		go d.handleConn(conn)
+		// BUG FIX #9: count every connection so Shutdown() can wait.
+		d.connWg.Add(1)
+		go func() {
+			defer d.connWg.Done()
+			d.handleConn(conn)
+		}()
 	}
 }
 
@@ -61,8 +69,18 @@ func (d *Daemon) Shutdown() error {
 	d.shutdown = true
 	d.mu.Unlock()
 
+	// Close the listener first so ListenAndServe() returns.
+	listenerErr := d.listener.Close()
+
+	// Stop all managed servers — this closes broadcast channels, which
+	// unblocks any StreamLogs handleConn goroutines.
 	d.supervisor.StopAll()
-	return d.listener.Close()
+
+	// BUG FIX #9: wait for all active connection goroutines to exit before
+	// returning. Prevents use-after-free / writes to closed resources.
+	d.connWg.Wait()
+
+	return listenerErr
 }
 
 func (d *Daemon) handleConn(conn net.Conn) {
@@ -125,7 +143,6 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		enc.Encode(ipc.Response{Type: ipc.RespData, Data: m})
 
 	case ipc.CmdRemove:
-		// Safety check: refuse if server is currently running.
 		if d.supervisor.IsRunning(req.ServerID) {
 			writeError(conn, fmt.Sprintf("server %s is running — stop it first", req.ServerID))
 			return
@@ -144,7 +161,7 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		}
 		for line := range ch {
 			if err := enc.Encode(ipc.Response{Type: ipc.RespLog, Message: line}); err != nil {
-				return // client disconnected
+				return
 			}
 		}
 

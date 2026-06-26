@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -68,9 +69,11 @@ type Model struct {
 	width        int
 	height       int
 
-	// BUG FIX #5: track a cancel func for the active log stream goroutine.
-	// Previously switching views (l → esc → l again) spawned a second goroutine
-	// that kept pumping into m.program.Send forever — a goroutine leak.
+	// BUG FIX #8: logCancel is written from a tea.Cmd goroutine (startLogStream)
+	// and read/cleared from Update() — two different goroutines without any
+	// synchronisation. Under -race this is a data race. Guard all accesses
+	// with logMu.
+	logMu     sync.Mutex
 	logCancel context.CancelFunc
 }
 
@@ -104,6 +107,8 @@ func (m *Model) selectedID() string {
 
 // cancelLogStream stops the current log goroutine if one is running.
 func (m *Model) cancelLogStream() {
+	m.logMu.Lock()
+	defer m.logMu.Unlock()
 	if m.logCancel != nil {
 		m.logCancel()
 		m.logCancel = nil
@@ -175,7 +180,7 @@ func (m *Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "l":
 		if id := m.selectedID(); id != "" {
-			m.cancelLogStream() // stop previous stream before starting new
+			m.cancelLogStream()
 			m.activeServer = id
 			m.curView = viewLogs
 			m.logs = nil
@@ -234,7 +239,8 @@ func (m *Model) updateConsole(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // startLogStream opens a log subscription and pumps lines via p.Send().
-// Stores a cancel func in m.logCancel so it can be stopped on view switch.
+// The cancel func is stored under logMu to prevent a data race between
+// this tea.Cmd goroutine and Update() which may call cancelLogStream().
 func (m *Model) startLogStream(id string) tea.Cmd {
 	return func() tea.Msg {
 		ch, err := m.client.StreamLogs(id)
@@ -243,7 +249,12 @@ func (m *Model) startLogStream(id string) tea.Cmd {
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
+
+		// BUG FIX #8: store cancel under logMu — Update() reads/clears it
+		// from a different goroutine.
+		m.logMu.Lock()
 		m.logCancel = cancel
+		m.logMu.Unlock()
 
 		go func() {
 			defer cancel()

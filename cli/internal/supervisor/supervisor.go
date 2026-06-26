@@ -78,11 +78,6 @@ func (s *Supervisor) Stop(id string) error {
 	}
 
 	s.mu.Lock()
-	// BUG FIX #4: saveState BEFORE deleting from map.
-	// The previous order deleted first, then saved — saveState would
-	// always see the server gone even if it was supposed to be in the list.
-	// Correct order: update state with the stopped handle still in the map
-	// (saveState filters by IsRunning, so it won't include it), THEN delete.
 	s.saveState()
 	delete(s.servers, id)
 	s.mu.Unlock()
@@ -120,9 +115,12 @@ func (s *Supervisor) Restart(id string) error {
 	s.mu.Lock()
 	s.servers[id] = newH
 	s.saveState()
+	// BUG FIX #10: launch watch() while mu is still held, matching Start().
+	// Launching it after Unlock() left a window where a concurrent Restart()
+	// or Stop() could register a second watchdog for the same server ID.
+	go s.watch(id, cfg, 0)
 	s.mu.Unlock()
 
-	go s.watch(id, cfg, 0)
 	return nil
 }
 
@@ -241,7 +239,7 @@ func (s *Supervisor) watch(id string, cfg *config.ServerConfig, attempts int) {
 	if attempts > 0 {
 		select {
 		case <-time.After(stableAfter):
-			attempts = 0 // process survived — treat next crash as first
+			attempts = 0
 		case <-h.Done():
 			// Exited before stable — fall through with current attempts
 		}
