@@ -27,12 +27,25 @@ var daemonCmd = &cobra.Command{
 
 		openBrowser("http://localhost:3000")
 
+		// Start IPC + HTTP in background
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- d.ListenAndServe()
+		}()
+
 		quit := make(chan os.Signal, 1)
 		signal.Notify(quit, os.Interrupt)
-		<-quit
 
-		fmt.Println("[opd] shutting down...")
-		return d.Shutdown()
+		select {
+		case <-quit:
+			fmt.Println("[opd] shutting down...")
+			return d.Shutdown()
+		case err := <-errCh:
+			if err != nil {
+				return fmt.Errorf("daemon error: %w", err)
+			}
+			return nil
+		}
 	},
 }
 
