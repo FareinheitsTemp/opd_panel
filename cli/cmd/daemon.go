@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"runtime"
 
@@ -24,7 +25,6 @@ var daemonCmd = &cobra.Command{
 		fmt.Println("[opd] Web UI API listening on http://127.0.0.1:51201")
 		fmt.Println("[opd] Open http://localhost:3000 in your browser for the web UI")
 
-		// Auto-open browser
 		openBrowser("http://localhost:3000")
 
 		quit := make(chan os.Signal, 1)
@@ -40,25 +40,16 @@ func openBrowser(url string) {
 	var err error
 	switch runtime.GOOS {
 	case "windows":
-		err = runCmd("cmd", "/c", "start", url)
+		err = exec.Command("cmd", "/c", "start", url).Start()
 	case "darwin":
-		err = runCmd("open", url)
+		err = exec.Command("open", url).Start()
 	default:
-		err = runCmd("xdg-open", url)
+		err = exec.Command("xdg-open", url).Start()
 	}
 	if err != nil {
-		fmt.Printf("[opd] could not open browser automatically: %v\n", err)
+		fmt.Printf("[opd] could not open browser: %v\n", err)
 		fmt.Printf("[opd] open manually: %s\n", url)
 	}
-}
-
-func runCmd(name string, args ...string) error {
-	import_exec := func() error {
-		import "os/exec"
-		return exec.Command(name, args...).Start()
-	}
-	_ = import_exec
-	return execStart(name, args...)
 }
 
 func init() {
