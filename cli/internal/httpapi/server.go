@@ -1,5 +1,5 @@
-// Package httpapi provides the HTTP REST + WebSocket API for the OPD web UI.
-// It listens on 127.0.0.1:51201 (separate from the IPC port 51200).
+// Package httpapi provides the HTTP REST + SSE API for the OPD web UI.
+// Listens on 127.0.0.1:51201 (separate from the IPC port 51200).
 package httpapi
 
 import (
@@ -19,7 +19,7 @@ import (
 const HTTPAddr = "127.0.0.1:51201"
 
 type Server struct {
-	sup *supervisor.Supervisor
+	sup        *supervisor.Supervisor
 	httpServer *http.Server
 }
 
@@ -28,7 +28,6 @@ func New(sup *supervisor.Supervisor) *Server {
 
 	mux := http.NewServeMux()
 
-	// CORS middleware wrapper
 	withCORS := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -44,7 +43,7 @@ func New(sup *supervisor.Supervisor) *Server {
 
 	mux.HandleFunc("/api/servers", withCORS(s.handleListServers))
 	mux.HandleFunc("/api/servers/", withCORS(s.handleServerAction))
-	mux.HandleFunc("/ws/logs/", s.handleWsLogs)
+	mux.HandleFunc("/ws/logs/", s.handleSSELogs)
 	mux.HandleFunc("/api/health", withCORS(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}))
@@ -68,33 +67,32 @@ func (s *Server) Shutdown() {
 	s.httpServer.Close()
 }
 
-// GET /api/servers — list all servers (running + disk)
+// ServerEntry is the JSON shape sent to the web UI.
+type ServerEntry struct {
+	ID      string  `json:"id"`
+	Name    string  `json:"name"`
+	Status  string  `json:"status"`
+	Port    int     `json:"port"`
+	PID     int     `json:"pid"`
+	RAMUsed uint64  `json:"ram_used"`
+	RAMMax  uint64  `json:"ram_max"`
+	CPU     float64 `json:"cpu"`
+	Uptime  string  `json:"uptime"`
+	Jar     string  `json:"jar"`
+}
+
+// GET /api/servers
 func (s *Server) handleListServers(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	running := s.sup.List()
 	disk, _ := config.ListAll()
 
-	type ServerEntry struct {
-		ID      string  `json:"id"`
-		Name    string  `json:"name"`
-		Status  string  `json:"status"`
-		Port    int     `json:"port"`
-		PID     int     `json:"pid"`
-		RAMUsed uint64  `json:"ram_used"`
-		RAMMax  int     `json:"ram_max"`
-		CPU     float64 `json:"cpu"`
-		Uptime  string  `json:"uptime"`
-		Jar     string  `json:"jar"`
-	}
-
-	// Index running servers for quick lookup
 	runningMap := make(map[string]ipc.ServerInfo)
 	for _, srv := range running {
 		runningMap[srv.ID] = srv
 	}
 
-	// Merge disk list with running info
 	var entries []ServerEntry
 	seen := make(map[string]bool)
 
@@ -104,35 +102,33 @@ func (s *Server) handleListServers(w http.ResponseWriter, r *http.Request) {
 			Name:   d.Name,
 			Status: "stopped",
 			Port:   d.Port,
-			RAMMax: d.RAMMax,
+			RAMMax: uint64(d.RAMMax),
 			Jar:    d.Jar,
 		}
-		if r, ok := runningMap[d.ID]; ok {
-			e.Status = r.Status
-			e.PID = r.PID
-			e.RAMUsed = r.RAMUsed
-			e.CPU = r.CPU
-			if r.Uptime > 0 {
-				e.Uptime = formatDuration(r.Uptime)
-			}
+		if rv, ok := runningMap[d.ID]; ok {
+			e.Status  = rv.Status
+			e.PID     = rv.PID
+			e.RAMUsed = rv.RAMUsed
+			e.RAMMax  = rv.RAMMax
+			e.CPU     = float64(rv.CPU)
+			e.Uptime  = formatDuration(time.Duration(rv.Uptime))
 		}
 		entries = append(entries, e)
 		seen[d.ID] = true
 	}
 
-	// Add running servers that might not be on disk list (edge case)
-	for _, r := range running {
-		if !seen[r.ID] {
+	for _, rv := range running {
+		if !seen[rv.ID] {
 			entries = append(entries, ServerEntry{
-				ID:      r.ID,
-				Name:    r.Name,
-				Status:  r.Status,
-				Port:    r.Port,
-				PID:     r.PID,
-				RAMUsed: r.RAMUsed,
-				RAMMax:  r.RAMMax,
-				CPU:     r.CPU,
-				Uptime:  formatDuration(r.Uptime),
+				ID:      rv.ID,
+				Name:    rv.Name,
+				Status:  rv.Status,
+				Port:    rv.Port,
+				PID:     rv.PID,
+				RAMUsed: rv.RAMUsed,
+				RAMMax:  rv.RAMMax,
+				CPU:     float64(rv.CPU),
+				Uptime:  formatDuration(time.Duration(rv.Uptime)),
 			})
 		}
 	}
@@ -147,7 +143,6 @@ func (s *Server) handleListServers(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleServerAction(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	// Parse path: /api/servers/:id/:action
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/servers/"), "/")
 	if len(parts) < 2 {
 		http.Error(w, `{"error":"invalid path"}`, http.StatusBadRequest)
@@ -194,9 +189,8 @@ func (s *Server) handleServerAction(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"ok": "true"})
 }
 
-// WebSocket log streaming — /ws/logs/:id
-// Uses a simple line-based protocol over raw HTTP upgrade (no external ws lib needed).
-func (s *Server) handleWsLogs(w http.ResponseWriter, r *http.Request) {
+// GET /ws/logs/:id — Server-Sent Events log stream
+func (s *Server) handleSSELogs(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/ws/logs/")
 	if id == "" {
 		http.Error(w, "missing server id", http.StatusBadRequest)
@@ -209,7 +203,6 @@ func (s *Server) handleWsLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Upgrade to SSE (Server-Sent Events) — simpler than WebSocket, works everywhere
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -221,7 +214,6 @@ func (s *Server) handleWsLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use a done channel to detect client disconnect
 	var once sync.Once
 	done := make(chan struct{})
 	go func() {
@@ -235,7 +227,6 @@ func (s *Server) handleWsLogs(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			// SSE format: "data: <line>\n\n"
 			fmt.Fprintf(w, "data: %s\n\n", strings.ReplaceAll(line, "\n", " "))
 			flusher.Flush()
 		case <-done:
