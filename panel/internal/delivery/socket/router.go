@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/FareinheitsTemp/opd_panel/panel/internal/config"
+	"github.com/FareinheitsTemp/opd_panel/panel/internal/domain"
 	"github.com/FareinheitsTemp/opd_panel/panel/internal/usecase"
 )
 
@@ -192,10 +193,6 @@ func (r *Router) Handle(ctx context.Context, req *Request, enc *json.Encoder) {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
-
-import (
-	"github.com/FareinheitsTemp/opd_panel/panel/internal/domain"
-)
 
 func str(m map[string]any, key string) string {
 	v, _ := m[key].(string)
