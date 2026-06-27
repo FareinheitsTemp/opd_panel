@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -19,10 +21,12 @@ type HTTPServer struct {
 	networkUC  *usecase.NetworkUseCase
 	databaseUC *usecase.DatabaseUseCase
 	addr       string
+	serversDir string
 }
 
 func NewHTTPServer(
 	addr string,
+	serversDir string,
 	serverUC *usecase.ServerUseCase,
 	scheduleUC *usecase.ScheduleUseCase,
 	subuserUC *usecase.SubuserUseCase,
@@ -31,6 +35,7 @@ func NewHTTPServer(
 ) *HTTPServer {
 	return &HTTPServer{
 		addr:       addr,
+		serversDir: serversDir,
 		serverUC:   serverUC,
 		scheduleUC: scheduleUC,
 		subuserUC:  subuserUC,
@@ -41,6 +46,9 @@ func NewHTTPServer(
 
 func (s *HTTPServer) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
+
+	// Misc
+	mux.HandleFunc("/api/disks", s.cors(s.handleDisks))
 
 	// Servers
 	mux.HandleFunc("/api/servers", s.cors(s.handleServers))
@@ -112,13 +120,64 @@ func decodeJSON(r *http.Request, v any) error {
 	return json.NewDecoder(r.Body).Decode(v)
 }
 
-// pathID extracts the last segment of the URL path
-func pathID(r *http.Request) string {
-	parts := strings.Split(strings.TrimSuffix(r.URL.Path, "/"), "/")
-	if len(parts) == 0 {
-		return ""
+func pathSegment(r *http.Request, index int) string {
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if index < len(parts) {
+		return parts[index]
 	}
-	return parts[len(parts)-1]
+	return ""
+}
+
+// /api/servers -> parts: ["api","servers"] -> id at index 2
+func serverID(r *http.Request) string { return pathSegment(r, 2) }
+func subPath(r *http.Request) string  { return pathSegment(r, 3) }
+
+// ── Disks ─────────────────────────────────────────────────────────────────────
+
+type diskInfo struct {
+	Path   string  `json:"path"`
+	Label  string  `json:"label"`
+	FreeGB float64 `json:"free_gb"`
+}
+
+func (s *HTTPServer) handleDisks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	disks := []diskInfo{}
+
+	if runtime.GOOS == "windows" {
+		// Check common Windows drive letters
+		for _, letter := range "CDEFGHIJKLMNOPQRSTUVWXYZ" {
+			path := string(letter) + ":\\"
+			if _, err := os.Stat(path); err == nil {
+				var freeBytes uint64
+				getDiskFreeSpace(path, &freeBytes)
+				disks = append(disks, diskInfo{
+					Path:   path,
+					Label:  string(letter) + ":",
+					FreeGB: float64(freeBytes) / 1024 / 1024 / 1024,
+				})
+			}
+		}
+	} else {
+		// Linux: just report root
+		var stat syscallStatfs
+		if statfsCall("/", &stat) == nil {
+			disks = append(disks, diskInfo{
+				Path:   "/",
+				Label:  "root",
+				FreeGB: float64(stat.Bavail*uint64(stat.Bsize)) / 1024 / 1024 / 1024,
+			})
+		}
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"disks":        disks,
+		"current_root": s.serversDir,
+	})
 }
 
 // ── Servers ───────────────────────────────────────────────────────────────────
@@ -130,6 +189,9 @@ func (s *HTTPServer) handleServers(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeErr(w, 500, err)
 			return
+		}
+		if list == nil {
+			list = []*usecase.ServerView{}
 		}
 		writeJSON(w, 200, list)
 
@@ -152,29 +214,25 @@ func (s *HTTPServer) handleServers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *HTTPServer) handleServer(w http.ResponseWriter, r *http.Request) {
-	id := pathID(r)
+	id := serverID(r)
+	sub := subPath(r)
 
-	// /api/servers/:id/start|stop|restart
-	if strings.Contains(r.URL.Path, "/start") {
-		if err := s.serverUC.Start(r.Context(), strings.Split(id, "/")[0]); err != nil {
-			writeErr(w, 500, err)
-			return
+	switch sub {
+	case "start":
+		if err := s.serverUC.Start(r.Context(), id); err != nil {
+			writeErr(w, 500, err); return
 		}
 		writeJSON(w, 200, map[string]string{"status": "starting"})
 		return
-	}
-	if strings.Contains(r.URL.Path, "/stop") {
-		if err := s.serverUC.Stop(r.Context(), strings.Split(id, "/")[0]); err != nil {
-			writeErr(w, 500, err)
-			return
+	case "stop":
+		if err := s.serverUC.Stop(r.Context(), id); err != nil {
+			writeErr(w, 500, err); return
 		}
 		writeJSON(w, 200, map[string]string{"status": "stopping"})
 		return
-	}
-	if strings.Contains(r.URL.Path, "/restart") {
-		if err := s.serverUC.Restart(r.Context(), strings.Split(id, "/")[0]); err != nil {
-			writeErr(w, 500, err)
-			return
+	case "restart":
+		if err := s.serverUC.Restart(r.Context(), id); err != nil {
+			writeErr(w, 500, err); return
 		}
 		writeJSON(w, 200, map[string]string{"status": "restarting"})
 		return
@@ -184,18 +242,14 @@ func (s *HTTPServer) handleServer(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		srv, metrics, err := s.serverUC.Info(r.Context(), id)
 		if err != nil {
-			writeErr(w, 404, err)
-			return
+			writeErr(w, 404, err); return
 		}
 		writeJSON(w, 200, map[string]any{"server": srv, "metrics": metrics})
-
 	case http.MethodDelete:
 		if err := s.serverUC.Delete(r.Context(), id); err != nil {
-			writeErr(w, 500, err)
-			return
+			writeErr(w, 500, err); return
 		}
 		w.WriteHeader(http.StatusNoContent)
-
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
@@ -209,20 +263,17 @@ func (s *HTTPServer) handleSchedules(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		list, err := s.scheduleUC.List(r.Context(), serverID)
 		if err != nil {
-			writeErr(w, 500, err)
-			return
+			writeErr(w, 500, err); return
 		}
 		writeJSON(w, 200, list)
 	case http.MethodPost:
 		var in usecase.CreateScheduleInput
 		if err := decodeJSON(r, &in); err != nil {
-			writeErr(w, 400, err)
-			return
+			writeErr(w, 400, err); return
 		}
 		sc, err := s.scheduleUC.Create(r.Context(), in)
 		if err != nil {
-			writeErr(w, 500, err)
-			return
+			writeErr(w, 500, err); return
 		}
 		writeJSON(w, 201, sc)
 	default:
@@ -231,24 +282,21 @@ func (s *HTTPServer) handleSchedules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *HTTPServer) handleSchedule(w http.ResponseWriter, r *http.Request) {
-	id := pathID(r)
+	id := pathSegment(r, 2)
 	switch r.Method {
 	case http.MethodPut:
 		var in usecase.CreateScheduleInput
 		if err := decodeJSON(r, &in); err != nil {
-			writeErr(w, 400, err)
-			return
+			writeErr(w, 400, err); return
 		}
 		sc, err := s.scheduleUC.Update(r.Context(), id, in)
 		if err != nil {
-			writeErr(w, 500, err)
-			return
+			writeErr(w, 500, err); return
 		}
 		writeJSON(w, 200, sc)
 	case http.MethodDelete:
 		if err := s.scheduleUC.Delete(r.Context(), id); err != nil {
-			writeErr(w, 500, err)
-			return
+			writeErr(w, 500, err); return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
@@ -264,8 +312,7 @@ func (s *HTTPServer) handleSubusers(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		list, err := s.subuserUC.List(r.Context(), serverID)
 		if err != nil {
-			writeErr(w, 500, err)
-			return
+			writeErr(w, 500, err); return
 		}
 		writeJSON(w, 200, list)
 	case http.MethodPost:
@@ -275,13 +322,11 @@ func (s *HTTPServer) handleSubusers(w http.ResponseWriter, r *http.Request) {
 			Permissions []string `json:"permissions"`
 		}
 		if err := decodeJSON(r, &body); err != nil {
-			writeErr(w, 400, err)
-			return
+			writeErr(w, 400, err); return
 		}
 		su, err := s.subuserUC.Add(r.Context(), body.ServerID, body.Email, body.Permissions)
 		if err != nil {
-			writeErr(w, 500, err)
-			return
+			writeErr(w, 500, err); return
 		}
 		writeJSON(w, 201, su)
 	default:
@@ -290,26 +335,23 @@ func (s *HTTPServer) handleSubusers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *HTTPServer) handleSubuser(w http.ResponseWriter, r *http.Request) {
-	id := pathID(r)
+	id := pathSegment(r, 2)
 	switch r.Method {
 	case http.MethodPut:
 		var body struct {
 			Permissions []string `json:"permissions"`
 		}
 		if err := decodeJSON(r, &body); err != nil {
-			writeErr(w, 400, err)
-			return
+			writeErr(w, 400, err); return
 		}
 		su, err := s.subuserUC.UpdatePermissions(r.Context(), id, body.Permissions)
 		if err != nil {
-			writeErr(w, 500, err)
-			return
+			writeErr(w, 500, err); return
 		}
 		writeJSON(w, 200, su)
 	case http.MethodDelete:
 		if err := s.subuserUC.Remove(r.Context(), id); err != nil {
-			writeErr(w, 500, err)
-			return
+			writeErr(w, 500, err); return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
@@ -325,8 +367,7 @@ func (s *HTTPServer) handleDatabases(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		list, err := s.databaseUC.List(r.Context(), serverID)
 		if err != nil {
-			writeErr(w, 500, err)
-			return
+			writeErr(w, 500, err); return
 		}
 		writeJSON(w, 200, list)
 	case http.MethodPost:
@@ -334,13 +375,11 @@ func (s *HTTPServer) handleDatabases(w http.ResponseWriter, r *http.Request) {
 			ServerID string `json:"server_id"`
 		}
 		if err := decodeJSON(r, &body); err != nil {
-			writeErr(w, 400, err)
-			return
+			writeErr(w, 400, err); return
 		}
 		db, pass, err := s.databaseUC.Create(r.Context(), body.ServerID)
 		if err != nil {
-			writeErr(w, 500, err)
-			return
+			writeErr(w, 500, err); return
 		}
 		writeJSON(w, 201, map[string]any{"database": db, "password": pass})
 	default:
@@ -349,12 +388,11 @@ func (s *HTTPServer) handleDatabases(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *HTTPServer) handleDatabase(w http.ResponseWriter, r *http.Request) {
-	id := pathID(r)
+	id := pathSegment(r, 2)
 	switch r.Method {
 	case http.MethodDelete:
 		if err := s.databaseUC.Delete(r.Context(), id); err != nil {
-			writeErr(w, 500, err)
-			return
+			writeErr(w, 500, err); return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
@@ -370,8 +408,7 @@ func (s *HTTPServer) handleAllocations(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		list, err := s.networkUC.List(r.Context(), serverID)
 		if err != nil {
-			writeErr(w, 500, err)
-			return
+			writeErr(w, 500, err); return
 		}
 		writeJSON(w, 200, list)
 	case http.MethodPost:
@@ -381,13 +418,11 @@ func (s *HTTPServer) handleAllocations(w http.ResponseWriter, r *http.Request) {
 			Alias    string `json:"alias"`
 		}
 		if err := decodeJSON(r, &body); err != nil {
-			writeErr(w, 400, err)
-			return
+			writeErr(w, 400, err); return
 		}
 		a, err := s.networkUC.Assign(r.Context(), body.ServerID, body.IP, body.Alias)
 		if err != nil {
-			writeErr(w, 500, err)
-			return
+			writeErr(w, 500, err); return
 		}
 		writeJSON(w, 201, a)
 	default:
@@ -396,12 +431,11 @@ func (s *HTTPServer) handleAllocations(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *HTTPServer) handleAllocation(w http.ResponseWriter, r *http.Request) {
-	id := pathID(r)
+	id := pathSegment(r, 2)
 	switch r.Method {
 	case http.MethodDelete:
 		if err := s.networkUC.Free(r.Context(), id); err != nil {
-			writeErr(w, 500, fmt.Errorf("free allocation: %w", err))
-			return
+			writeErr(w, 500, fmt.Errorf("free allocation: %w", err)); return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	default:

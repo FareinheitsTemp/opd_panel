@@ -72,7 +72,7 @@ func main() {
 
 	// HTTP REST API server (for web frontend)
 	httpAddr := getEnv("OPD_HTTP_ADDR", "127.0.0.1:51201")
-	httpSrv := httpdelivery.NewHTTPServer(httpAddr, serverUC, scheduleUC, subuserUC, networkUC, databaseUC)
+	httpSrv := httpdelivery.NewHTTPServer(httpAddr, cfg.ServersDir, serverUC, scheduleUC, subuserUC, networkUC, databaseUC)
 
 	go func() {
 		if err := httpSrv.Run(ctx); err != nil {
