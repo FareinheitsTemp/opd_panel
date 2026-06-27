@@ -106,7 +106,7 @@ function AddServerModal({ onClose, onCreated }: { onClose:()=>void, onCreated:()
                   <option value={currentRoot}>{currentRoot} (current)</option>
                   {disks.filter(d=>d.path!==currentRoot).map(d=>(
                     <option key={d.path} value={d.path+'opd\\servers'}>
-                      {d.label} — {d.free_gb.toFixed(1)} GB free → {d.path}opd\servers
+                      {d.label} — {(d.free_gb??0).toFixed(1)} GB free → {d.path}opd\servers
                     </option>
                   ))}
                 </select>
@@ -327,6 +327,7 @@ export default function Home() {
   useEffect(() => { logsEndRef.current?.scrollIntoView({behavior:'smooth'}) }, [logs])
 
   function selectServer(id: string) {
+    if (!id) return
     setSelected(id); setLogs([]); setTab('console')
     sseRef.current?.close()
     const es = new EventSource(`${API}/ws/logs/${id}`)
@@ -349,6 +350,17 @@ export default function Home() {
   }
 
   const sel = servers.find(s=>s.id===selected) ?? null
+
+  const cpu = sel?.cpu ?? 0
+  const ramUsed = sel?.ram_used ?? 0
+  const ramMax = sel?.ram_max ?? 0
+
+  const stats: [string, string][] = sel ? [
+    ['RAM', `${fmtRam(ramUsed)} / ${fmtRam(ramMax)}`],
+    ['CPU', `${cpu.toFixed(1)}%`],
+    ['Uptime', sel.uptime || '—'],
+    ['PID', sel.pid ? String(sel.pid) : '—'],
+  ] : []
 
   const tabStyle = (t: string): React.CSSProperties => ({
     padding:'8px 16px', cursor:'pointer', fontSize:13, fontWeight:500,
@@ -447,14 +459,10 @@ export default function Home() {
               {/* Stats bar */}
               <div style={{ display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:1,
                 borderBottom:'1px solid #1e1e1e',background:'#1e1e1e',flexShrink:0 }}>
-                {[['RAM',''+fmtRam(sel.ram_used)+' / '+fmtRam(sel.ram_max)],
-                  ['CPU',`${sel.cpu.toFixed(1)}%`],
-                  ['Uptime',sel.uptime||'—'],
-                  ['PID',sel.pid?String(sel.pid):'—']
-                ].map(([l,v])=>(
-                  <div key={l} style={{ background:'#0d0d0d',padding:'10px 16px' }}>
-                    <div style={{ color:'#555',fontSize:11,marginBottom:3 }}>{l}</div>
-                    <div style={{ color:'#e0e0e0',fontSize:14,fontWeight:600,fontVariantNumeric:'tabular-nums' }}>{v}</div>
+                {stats.map(([label, value])=>(
+                  <div key={label} style={{ background:'#0d0d0d',padding:'10px 16px' }}>
+                    <div style={{ color:'#555',fontSize:11,marginBottom:3 }}>{label}</div>
+                    <div style={{ color:'#e0e0e0',fontSize:14,fontWeight:600,fontVariantNumeric:'tabular-nums' }}>{value}</div>
                   </div>
                 ))}
               </div>
