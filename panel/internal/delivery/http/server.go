@@ -6,11 +6,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"runtime"
 	"strings"
 	"time"
 
+	"github.com/FareinheitsTemp/opd_panel/panel/internal/domain"
 	"github.com/FareinheitsTemp/opd_panel/panel/internal/usecase"
 )
 
@@ -47,33 +46,19 @@ func NewHTTPServer(
 func (s *HTTPServer) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 
-	// Misc
 	mux.HandleFunc("/api/disks", s.cors(s.handleDisks))
-
-	// Servers
 	mux.HandleFunc("/api/servers", s.cors(s.handleServers))
 	mux.HandleFunc("/api/servers/", s.cors(s.handleServer))
-
-	// Schedules
 	mux.HandleFunc("/api/schedules", s.cors(s.handleSchedules))
 	mux.HandleFunc("/api/schedules/", s.cors(s.handleSchedule))
-
-	// Subusers
 	mux.HandleFunc("/api/subusers", s.cors(s.handleSubusers))
 	mux.HandleFunc("/api/subusers/", s.cors(s.handleSubuser))
-
-	// Databases
 	mux.HandleFunc("/api/databases", s.cors(s.handleDatabases))
 	mux.HandleFunc("/api/databases/", s.cors(s.handleDatabase))
-
-	// Allocations
 	mux.HandleFunc("/api/allocations", s.cors(s.handleAllocations))
 	mux.HandleFunc("/api/allocations/", s.cors(s.handleAllocation))
 
-	srv := &http.Server{
-		Addr:    s.addr,
-		Handler: mux,
-	}
+	srv := &http.Server{Addr: s.addr, Handler: mux}
 
 	go func() {
 		<-ctx.Done()
@@ -89,8 +74,6 @@ func (s *HTTPServer) Run(ctx context.Context) error {
 	return nil
 }
 
-// ── CORS middleware ───────────────────────────────────────────────────────────
-
 func (s *HTTPServer) cors(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -103,8 +86,6 @@ func (s *HTTPServer) cors(next http.HandlerFunc) http.HandlerFunc {
 		next(w, r)
 	}
 }
-
-// ── helpers ───────────────────────────────────────────────────────────────────
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -128,59 +109,24 @@ func pathSegment(r *http.Request, index int) string {
 	return ""
 }
 
-// /api/servers -> parts: ["api","servers"] -> id at index 2
-func serverID(r *http.Request) string { return pathSegment(r, 2) }
-func subPath(r *http.Request) string  { return pathSegment(r, 3) }
+func serverIDFromPath(r *http.Request) string { return pathSegment(r, 2) }
+func subPath(r *http.Request) string          { return pathSegment(r, 3) }
 
-// ── Disks ─────────────────────────────────────────────────────────────────────
-
-type diskInfo struct {
-	Path   string  `json:"path"`
-	Label  string  `json:"label"`
-	FreeGB float64 `json:"free_gb"`
-}
+// ── Disks (platform-specific impl in disks_windows.go / disks_linux.go) ────
 
 func (s *HTTPServer) handleDisks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-
-	disks := []diskInfo{}
-
-	if runtime.GOOS == "windows" {
-		// Check common Windows drive letters
-		for _, letter := range "CDEFGHIJKLMNOPQRSTUVWXYZ" {
-			path := string(letter) + ":\\"
-			if _, err := os.Stat(path); err == nil {
-				var freeBytes uint64
-				getDiskFreeSpace(path, &freeBytes)
-				disks = append(disks, diskInfo{
-					Path:   path,
-					Label:  string(letter) + ":",
-					FreeGB: float64(freeBytes) / 1024 / 1024 / 1024,
-				})
-			}
-		}
-	} else {
-		// Linux: just report root
-		var stat syscallStatfs
-		if statfsCall("/", &stat) == nil {
-			disks = append(disks, diskInfo{
-				Path:   "/",
-				Label:  "root",
-				FreeGB: float64(stat.Bavail*uint64(stat.Bsize)) / 1024 / 1024 / 1024,
-			})
-		}
-	}
-
+	disks := getDiskList()
 	writeJSON(w, 200, map[string]any{
 		"disks":        disks,
 		"current_root": s.serversDir,
 	})
 }
 
-// ── Servers ───────────────────────────────────────────────────────────────────
+// ── Servers ────────────────────────────────────────────────────────────
 
 func (s *HTTPServer) handleServers(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -191,10 +137,9 @@ func (s *HTTPServer) handleServers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if list == nil {
-			list = []*usecase.ServerView{}
+			list = []*domain.Server{}
 		}
 		writeJSON(w, 200, list)
-
 	case http.MethodPost:
 		var in usecase.CreateServerInput
 		if err := decodeJSON(r, &in); err != nil {
@@ -207,14 +152,13 @@ func (s *HTTPServer) handleServers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, 201, srv)
-
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 }
 
 func (s *HTTPServer) handleServer(w http.ResponseWriter, r *http.Request) {
-	id := serverID(r)
+	id := serverIDFromPath(r)
 	sub := subPath(r)
 
 	switch sub {
@@ -255,7 +199,7 @@ func (s *HTTPServer) handleServer(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ── Schedules ─────────────────────────────────────────────────────────────────
+// ── Schedules ────────────────────────────────────────────────────────────
 
 func (s *HTTPServer) handleSchedules(w http.ResponseWriter, r *http.Request) {
 	serverID := r.URL.Query().Get("server_id")
@@ -304,7 +248,7 @@ func (s *HTTPServer) handleSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ── Subusers ──────────────────────────────────────────────────────────────────
+// ── Subusers ─────────────────────────────────────────────────────────────
 
 func (s *HTTPServer) handleSubusers(w http.ResponseWriter, r *http.Request) {
 	serverID := r.URL.Query().Get("server_id")
@@ -359,7 +303,7 @@ func (s *HTTPServer) handleSubuser(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ── Databases ─────────────────────────────────────────────────────────────────
+// ── Databases ────────────────────────────────────────────────────────────
 
 func (s *HTTPServer) handleDatabases(w http.ResponseWriter, r *http.Request) {
 	serverID := r.URL.Query().Get("server_id")
@@ -400,7 +344,7 @@ func (s *HTTPServer) handleDatabase(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ── Allocations ───────────────────────────────────────────────────────────────
+// ── Allocations ───────────────────────────────────────────────────────────
 
 func (s *HTTPServer) handleAllocations(w http.ResponseWriter, r *http.Request) {
 	serverID := r.URL.Query().Get("server_id")
