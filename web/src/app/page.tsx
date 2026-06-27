@@ -57,7 +57,7 @@ function AddServerModal({ onClose, onCreated }: { onClose:()=>void, onCreated:()
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setError(''); setLoading(true)
     try {
-      const res = await fetch(`${API}/api/servers/create`, {
+      const res = await fetch(`${API}/api/servers`, {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({
           id: form.id.trim(), name: form.name.trim()||form.id.trim(),
@@ -100,14 +100,13 @@ function AddServerModal({ onClose, onCreated }: { onClose:()=>void, onCreated:()
         ) : (
           <form onSubmit={submit}>
             <div style={{ display:'grid',gap:14 }}>
-              {/* Disk selector */}
               <div>
                 <label style={lbl}>Storage Location</label>
                 <select style={{...inp}} value={form.servers_root} onChange={e=>setForm(f=>({...f,servers_root:e.target.value}))}>
                   <option value={currentRoot}>{currentRoot} (current)</option>
-                  {disks.filter(d=>d.path!==currentRoot.slice(0,3)&&d.path!==currentRoot).map(d=>(
-                    <option key={d.path} value={d.path+'/opd/servers'}>
-                      {d.label} — {d.free_gb} GB free → {d.path}opd\servers
+                  {disks.filter(d=>d.path!==currentRoot).map(d=>(
+                    <option key={d.path} value={d.path+'opd\\servers'}>
+                      {d.label} — {d.free_gb.toFixed(1)} GB free → {d.path}opd\servers
                     </option>
                   ))}
                 </select>
