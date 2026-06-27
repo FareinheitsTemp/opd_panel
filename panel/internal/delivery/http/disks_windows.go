@@ -15,7 +15,7 @@ type diskInfo struct {
 
 func getDiskList() []diskInfo {
 	var disks []diskInfo
-	for _, letter := range "CDEFGHIJKLMNOPQRSTUVWXYZ" {
+	for _, letter := range "ABCDEFGHIJKLMNOPQRSTUVWXYZ" {
 		path := string(letter) + `:\`
 		if _, err := os.Stat(path); err != nil {
 			continue
