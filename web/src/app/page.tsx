@@ -316,7 +316,9 @@ export default function Home() {
     try {
       const r = await fetch(`${API}/api/servers`)
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      setServers(await r.json()); setConnErr(null)
+      const data = await r.json()
+      setServers(Array.isArray(data) ? data : [])
+      setConnErr(null)
     } catch(e: unknown) {
       setConnErr(e instanceof Error ? e.message : 'Connection failed')
     } finally { setLoading(false) }
@@ -347,7 +349,7 @@ export default function Home() {
     setCmd('')
   }
 
-  const sel = servers.find(s=>s.id===selected)
+  const sel = servers.find(s=>s.id===selected) ?? null
 
   const tabStyle = (t: string): React.CSSProperties => ({
     padding:'8px 16px', cursor:'pointer', fontSize:13, fontWeight:500,
