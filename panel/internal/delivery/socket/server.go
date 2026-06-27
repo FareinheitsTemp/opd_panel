@@ -9,17 +9,25 @@ import (
 	"path/filepath"
 
 	"github.com/FareinheitsTemp/opd_panel/panel/internal/config"
+	"github.com/FareinheitsTemp/opd_panel/panel/internal/usecase"
 )
 
 type Server struct {
-	cfg     *config.Config
-	router  *Router
+	cfg    *config.Config
+	router *Router
 }
 
-func NewServer(cfg *config.Config) (*Server, error) {
+func NewServer(
+	cfg *config.Config,
+	serverUC *usecase.ServerUseCase,
+	scheduleUC *usecase.ScheduleUseCase,
+	subuserUC *usecase.SubuserUseCase,
+	networkUC *usecase.NetworkUseCase,
+	databaseUC *usecase.DatabaseUseCase,
+) (*Server, error) {
 	return &Server{
-		cfg:    cfg,
-		router: NewRouter(cfg),
+		cfg: cfg,
+		router: NewRouter(cfg, serverUC, scheduleUC, subuserUC, networkUC, databaseUC),
 	}, nil
 }
 
@@ -27,7 +35,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := os.MkdirAll(filepath.Dir(s.cfg.SocketPath), 0750); err != nil {
 		return err
 	}
-	os.Remove(s.cfg.SocketPath) // remove stale socket
+	os.Remove(s.cfg.SocketPath)
 
 	ln, err := net.Listen("unix", s.cfg.SocketPath)
 	if err != nil {
