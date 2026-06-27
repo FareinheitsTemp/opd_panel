@@ -10,6 +10,9 @@ import (
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/ipc"
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/supervisor"
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/supervisor/config"
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/shirou/gopsutil/v3/mem"
 )
 
 // TCPAddr is the address the IPC daemon listens on.
@@ -43,7 +46,6 @@ func New() (*Daemon, error) {
 }
 
 func (d *Daemon) ListenAndServe() error {
-	// Start HTTP API in background
 	go func() {
 		if err := d.httpSrv.Start(); err != nil {
 			fmt.Printf("[opd-http] error: %v\n", err)
@@ -94,6 +96,9 @@ func (d *Daemon) handleConn(conn net.Conn) {
 	enc := json.NewEncoder(conn)
 
 	switch req.Cmd {
+	case ipc.CmdPing:
+		enc.Encode(ipc.Response{Type: ipc.RespOK, Message: "pong"})
+
 	case ipc.CmdList:
 		enc.Encode(ipc.Response{Type: ipc.RespData, Data: d.supervisor.List()})
 
@@ -151,6 +156,92 @@ func (d *Daemon) handleConn(conn net.Conn) {
 			return
 		}
 		enc.Encode(ipc.Response{Type: ipc.RespOK, Message: fmt.Sprintf("%s removed", req.ServerID)})
+
+	case ipc.CmdCreate:
+		var cr ipc.CreateRequest
+		if err := json.Unmarshal([]byte(req.Payload), &cr); err != nil {
+			writeError(conn, "invalid create payload: "+err.Error())
+			return
+		}
+		if cr.ID == "" {
+			writeError(conn, "server id is required")
+			return
+		}
+		cfg := &config.ServerConfig{
+			ID:       cr.ID,
+			Name:     cr.Name,
+			Port:     cr.Port,
+			RAMMinMB: cr.RAMMinMB,
+			RAMMaxMB: cr.RAMMaxMB,
+			Jar:      cr.Jar,
+		}
+		if cfg.Name == "" {
+			cfg.Name = cfg.ID
+		}
+		if cfg.Jar == "" {
+			cfg.Jar = "server.jar"
+		}
+		if cfg.Port == 0 {
+			cfg.Port = 25565
+		}
+		if cfg.RAMMinMB == 0 {
+			cfg.RAMMinMB = 512
+		}
+		if cfg.RAMMaxMB == 0 {
+			cfg.RAMMaxMB = 2048
+		}
+		dir, err := config.Create(cfg)
+		if err != nil {
+			writeError(conn, err.Error())
+			return
+		}
+		enc.Encode(ipc.Response{Type: ipc.RespOK, Message: dir})
+
+	case ipc.CmdUpdateSettings:
+		var us ipc.UpdateSettingsRequest
+		if err := json.Unmarshal([]byte(req.Payload), &us); err != nil {
+			writeError(conn, "invalid settings payload: "+err.Error())
+			return
+		}
+		cfg, err := config.Load(us.ServerID)
+		if err != nil {
+			writeError(conn, err.Error())
+			return
+		}
+		if us.Name != "" {
+			cfg.Name = us.Name
+		}
+		if us.Port != 0 {
+			cfg.Port = us.Port
+		}
+		if us.RAMMaxMB != 0 {
+			cfg.RAMMaxMB = us.RAMMaxMB
+		}
+		if us.Jar != "" {
+			cfg.Jar = us.Jar
+		}
+		cfg.JavaFlags = us.JavaFlags
+		cfg.AutoRestart = us.AutoRestart
+		if err := config.Save(cfg); err != nil {
+			writeError(conn, err.Error())
+			return
+		}
+		enc.Encode(ipc.Response{Type: ipc.RespOK, Message: "settings saved"})
+
+	case ipc.CmdSysStats:
+		var stats ipc.SysStats
+		if percents, err := cpu.Percent(0, false); err == nil && len(percents) > 0 {
+			stats.CPUPercent = percents[0]
+		}
+		if vm, err := mem.VirtualMemory(); err == nil {
+			stats.RAMUsedMB = vm.Used / 1024 / 1024
+			stats.RAMTotalMB = vm.Total / 1024 / 1024
+		}
+		if du, err := disk.Usage(config.ServersRoot); err == nil {
+			stats.DiskUsedGB = float64(du.Used) / 1024 / 1024 / 1024
+			stats.DiskTotalGB = float64(du.Total) / 1024 / 1024 / 1024
+		}
+		enc.Encode(ipc.Response{Type: ipc.RespData, Data: stats})
 
 	case ipc.CmdStreamLogs:
 		ch, err := d.supervisor.SubscribeLogs(req.ServerID)

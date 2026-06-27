@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/daemon"
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/ipc"
@@ -19,7 +20,7 @@ func New() *Client {
 }
 
 func (c *Client) send(req ipc.Request) (*ipc.Response, error) {
-	conn, err := net.Dial("tcp", c.addr)
+	conn, err := net.DialTimeout("tcp", c.addr, 3*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("cannot connect to opd daemon (is it running?): %w", err)
 	}
@@ -37,6 +38,11 @@ func (c *Client) send(req ipc.Request) (*ipc.Response, error) {
 		return nil, fmt.Errorf("%s", resp.Message)
 	}
 	return &resp, nil
+}
+
+func (c *Client) Ping() error {
+	_, err := c.send(ipc.Request{Cmd: ipc.CmdPing})
+	return err
 }
 
 func (c *Client) Start(id string) (*ipc.Response, error) {
@@ -85,9 +91,40 @@ func (c *Client) Metrics(id string) (*ipc.MetricsInfo, error) {
 	return &m, json.Unmarshal(b, &m)
 }
 
+func (c *Client) Create(cr ipc.CreateRequest) (string, error) {
+	b, err := json.Marshal(cr)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.send(ipc.Request{Cmd: ipc.CmdCreate, Payload: string(b)})
+	if err != nil {
+		return "", err
+	}
+	return resp.Message, nil
+}
+
+func (c *Client) UpdateSettings(us ipc.UpdateSettingsRequest) error {
+	b, err := json.Marshal(us)
+	if err != nil {
+		return err
+	}
+	_, err = c.send(ipc.Request{Cmd: ipc.CmdUpdateSettings, Payload: string(b)})
+	return err
+}
+
+func (c *Client) SysStats() (*ipc.SysStats, error) {
+	resp, err := c.send(ipc.Request{Cmd: ipc.CmdSysStats})
+	if err != nil {
+		return nil, err
+	}
+	b, _ := json.Marshal(resp.Data)
+	var s ipc.SysStats
+	return &s, json.Unmarshal(b, &s)
+}
+
 // StreamLogs opens a persistent TCP connection and streams log lines.
 func (c *Client) StreamLogs(id string) (<-chan string, error) {
-	conn, err := net.Dial("tcp", c.addr)
+	conn, err := net.DialTimeout("tcp", c.addr, 3*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("cannot connect to opd daemon: %w", err)
 	}

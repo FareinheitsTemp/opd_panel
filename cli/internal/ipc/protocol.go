@@ -2,15 +2,19 @@ package ipc
 
 const (
 	// Client → Daemon
-	CmdList        = "list"
-	CmdListDisk    = "list_disk"
-	CmdStart       = "start"
-	CmdStop        = "stop"
-	CmdRestart     = "restart"
-	CmdSendCommand = "console"
-	CmdMetrics     = "metrics"
-	CmdStreamLogs  = "stream_logs"
-	CmdRemove      = "remove"
+	CmdList           = "list"
+	CmdListDisk       = "list_disk"
+	CmdStart          = "start"
+	CmdStop           = "stop"
+	CmdRestart        = "restart"
+	CmdSendCommand    = "console"
+	CmdMetrics        = "metrics"
+	CmdStreamLogs     = "stream_logs"
+	CmdRemove         = "remove"
+	CmdCreate         = "create"
+	CmdUpdateSettings = "update_settings"
+	CmdSysStats       = "sys_stats"
+	CmdPing           = "ping"
 
 	// Daemon → Client
 	RespOK    = "ok"
@@ -53,9 +57,36 @@ type MetricsInfo struct {
 }
 
 type DiskServerInfo struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Port    int    `json:"port"`
-	RAMMax  int    `json:"ram_max_mb"`
-	Jar     string `json:"jar"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Port   int    `json:"port"`
+	RAMMax int    `json:"ram_max_mb"`
+	Jar    string `json:"jar"`
+}
+
+type CreateRequest struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Port     int    `json:"port"`
+	RAMMinMB int    `json:"ram_min_mb"`
+	RAMMaxMB int    `json:"ram_max_mb"`
+	Jar      string `json:"jar"`
+}
+
+type UpdateSettingsRequest struct {
+	ServerID    string   `json:"server_id"`
+	Name        string   `json:"name"`
+	Port        int      `json:"port"`
+	RAMMaxMB    int      `json:"ram_max_mb"`
+	Jar         string   `json:"jar"`
+	JavaFlags   []string `json:"java_flags"`
+	AutoRestart bool     `json:"auto_restart"`
+}
+
+type SysStats struct {
+	CPUPercent  float64 `json:"cpu_percent"`
+	RAMUsedMB   uint64  `json:"ram_used_mb"`
+	RAMTotalMB  uint64  `json:"ram_total_mb"`
+	DiskUsedGB  float64 `json:"disk_used_gb"`
+	DiskTotalGB float64 `json:"disk_total_gb"`
 }

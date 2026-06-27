@@ -10,7 +10,8 @@ import (
 var rootCmd = &cobra.Command{
 	Use:   "opd",
 	Short: "OPD — Minecraft server process manager",
-	Long:  `opd manages Minecraft server processes on your host.\nRun 'opd daemon' first, then use other commands to control servers.`,
+	Long:  `opd manages Minecraft server processes.\nRun 'opd tui' or just 'opd' to launch the full interactive dashboard.`,
+	RunE:  tuiCmd.RunE,
 }
 
 func Execute() {
@@ -22,10 +23,11 @@ func Execute() {
 
 func init() {
 	rootCmd.AddCommand(
+		tuiCmd,
+		daemonCmd,
 		addCmd,
 		listCmd,
 		removeCmd,
-		daemonCmd,
 		startCmd,
 		stopCmd,
 		restartCmd,
@@ -33,6 +35,5 @@ func init() {
 		logsCmd,
 		consoleCmd,
 		metricsCmd,
-		tuiCmd,
 	)
 }

@@ -10,7 +10,6 @@ import (
 	"github.com/FareinheitsTemp/opd_panel/cli/internal/ipc"
 )
 
-// DefaultServersRoot returns %APPDATA%\opd\servers on Windows, /var/lib/opd/servers elsewhere.
 func DefaultServersRoot() string {
 	if runtime.GOOS == "windows" {
 		appData := os.Getenv("APPDATA")
@@ -22,10 +21,8 @@ func DefaultServersRoot() string {
 	return "/var/lib/opd/servers"
 }
 
-// ServersRoot is the resolved path — can be overridden at runtime via SetServersRoot.
 var ServersRoot = DefaultServersRoot()
 
-// SetServersRoot changes the active servers root and persists it to the global config.
 func SetServersRoot(path string) error {
 	if err := os.MkdirAll(path, 0755); err != nil {
 		return fmt.Errorf("create dir %s: %w", path, err)
@@ -33,8 +30,6 @@ func SetServersRoot(path string) error {
 	ServersRoot = path
 	return saveGlobalConfig()
 }
-
-// --- Global config (stores custom ServersRoot) ---
 
 type globalConfig struct {
 	ServersRoot string `json:"servers_root"`
@@ -75,8 +70,6 @@ func saveGlobalConfig() error {
 	defer f.Close()
 	return json.NewEncoder(f).Encode(globalConfig{ServersRoot: ServersRoot})
 }
-
-// --- Server config ---
 
 type ServerConfig struct {
 	ID          string
@@ -129,6 +122,23 @@ func Save(cfg *ServerConfig) error {
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	return enc.Encode(cfg)
+}
+
+// Create creates the server directory and writes opd.json. Returns the dir path.
+func Create(cfg *ServerConfig) (string, error) {
+	dir := filepath.Join(ServersRoot, cfg.ID)
+	if _, err := os.Stat(dir); err == nil {
+		return "", fmt.Errorf("server %s already exists", cfg.ID)
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("create dir %s: %w", dir, err)
+	}
+	cfg.Dir = dir
+	cfg.JarPath = filepath.Join(dir, cfg.Jar)
+	if err := Save(cfg); err != nil {
+		return "", err
+	}
+	return dir, nil
 }
 
 func ListAll() ([]ipc.DiskServerInfo, error) {
