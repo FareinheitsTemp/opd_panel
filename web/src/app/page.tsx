@@ -362,6 +362,12 @@ export default function Home() {
     ['PID', sel.pid ? String(sel.pid) : '—'],
   ] : []
 
+  const actionBtns = sel ? [
+    sel.status!=='running'&&sel.status!=='starting' ? { key:'start', label:'▶ Start', bg:'#166534', color:'#22c55e' } : null,
+    sel.status==='running'||sel.status==='starting' ? { key:'restart', label:'↺ Restart', bg:'#78350f', color:'#f59e0b' } : null,
+    sel.status==='running'||sel.status==='starting' ? { key:'stop', label:'■ Stop', bg:'#7f1d1d', color:'#f87171' } : null,
+  ].filter(Boolean) as { key: string; label: string; bg: string; color: string }[] : []
+
   const tabStyle = (t: string): React.CSSProperties => ({
     padding:'8px 16px', cursor:'pointer', fontSize:13, fontWeight:500,
     border:'none', background:'none',
@@ -444,15 +450,11 @@ export default function Home() {
                   </div>
                 </div>
                 <div style={{ display:'flex',gap:8 }}>
-                  {sel.status!=='running'&&sel.status!=='starting'&&(
-                    <button onClick={()=>action(sel.id,'start')} style={btn('#166534','#22c55e')}>▶ Start</button>
-                  )}
-                  {(sel.status==='running'||sel.status==='starting')&&(
-                    <button onClick={()=>action(sel.id,'restart')} style={btn('#78350f','#f59e0b')}>↺ Restart</button>
-                  )}
-                  {(sel.status==='running'||sel.status==='starting')&&(
-                    <button onClick={()=>action(sel.id,'stop')} style={btn('#7f1d1d','#f87171')}>■ Stop</button>
-                  )}
+                  {actionBtns.map(b=>(
+                    <button key={b.key} onClick={()=>action(sel.id, b.key)} style={btn(b.bg, b.color)}>
+                      {b.label}
+                    </button>
+                  ))}
                 </div>
               </div>
 
