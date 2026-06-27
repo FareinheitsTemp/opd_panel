@@ -339,7 +339,7 @@ function SidebarContent({
     )
   }
   return (
-    <>
+    <div style={{ display:'contents' }}>
       {servers.map(srv=>(
         <button key={srv.id} onClick={()=>onSelect(srv.id)} style={{
           display:'flex',alignItems:'center',width:'100%',padding:'10px 16px',
@@ -354,7 +354,7 @@ function SidebarContent({
           </div>
         </button>
       ))}
-    </>
+    </div>
   )
 }
 
