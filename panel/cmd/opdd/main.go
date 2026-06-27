@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	_ "modernc.org/sqlite"
@@ -25,6 +27,9 @@ func main() {
 	}
 
 	// Open SQLite DB
+	if err := os.MkdirAll(cfg.DBDir(), 0750); err != nil {
+		log.Fatalf("mkdir db: %v", err)
+	}
 	db, err := sql.Open("sqlite", cfg.DBPath)
 	if err != nil {
 		log.Fatalf("db open: %v", err)
@@ -49,12 +54,22 @@ func main() {
 	// Versions manager
 	vm := versions.NewManager(cfg.CacheDir)
 
+	// MySQL config from env
+	mysqlDSN := getEnv("OPD_MYSQL_DSN", "root:@tcp(127.0.0.1:3306)/")
+	mysqlHost := getEnv("OPD_MYSQL_HOST", "127.0.0.1")
+	mysqlPort := getEnvInt("OPD_MYSQL_PORT", 3306)
+	encKeyHex := getEnv("OPD_DB_ENCRYPT_KEY", "")
+	encKey, err := parseEncryptKey(encKeyHex)
+	if err != nil {
+		log.Fatalf("OPD_DB_ENCRYPT_KEY must be a 32-byte hex string (64 hex chars): %v", err)
+	}
+
 	// Use cases
 	serverUC := usecase.NewServerUseCase(serverRepo, agentClient, vm)
 	scheduleUC := usecase.NewScheduleUseCase(scheduleRepo, agentClient)
 	subuserUC := usecase.NewSubuserUseCase(subuserRepo)
 	networkUC := usecase.NewNetworkUseCase(allocationRepo)
-	databaseUC := usecase.NewDatabaseUseCase(databaseRepo, cfg)
+	databaseUC := usecase.NewDatabaseUseCase(databaseRepo, mysqlDSN, mysqlHost, mysqlPort, encKey)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -121,4 +136,37 @@ func runMigrations(db *sql.DB) error {
 		);
 	`)
 	return err
+}
+
+func getEnv(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func getEnvInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func parseEncryptKey(hexKey string) ([]byte, error) {
+	if hexKey == "" {
+		// Generate a random key if not set (dev mode — not persistent across restarts)
+		key := make([]byte, 32)
+		if _, err := os.ReadFile("/dev/urandom"); err != nil {
+			// fallback: use fixed dev key
+			for i := range key { key[i] = byte(i + 1) }
+			log.Println("WARNING: OPD_DB_ENCRYPT_KEY not set, using insecure dev key")
+			return key, nil
+		}
+		log.Println("WARNING: OPD_DB_ENCRYPT_KEY not set, using insecure dev key")
+		for i := range key { key[i] = byte(i + 1) }
+		return key, nil
+	}
+	return hex.DecodeString(hexKey)
 }

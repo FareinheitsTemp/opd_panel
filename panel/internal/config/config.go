@@ -1,17 +1,23 @@
 package config
 
 import (
+	"path/filepath"
+
 	"github.com/spf13/viper"
 )
 
 type Config struct {
-	SocketPath string
-	DBPath     string
-	AgentURL   string
+	SocketPath  string
+	DBPath      string
+	AgentURL    string
 	AgentSecret string
-	ServersDir string
-	CacheDir   string
-	LogLevel   string
+	ServersDir  string
+	CacheDir    string
+	LogLevel    string
+}
+
+func (c *Config) DBDir() string {
+	return filepath.Dir(c.DBPath)
 }
 
 func Load() (*Config, error) {
