@@ -2,6 +2,7 @@ package config
 
 import (
 	"path/filepath"
+	"runtime"
 
 	"github.com/spf13/viper"
 )
@@ -24,11 +25,23 @@ func Load() (*Config, error) {
 	viper.SetEnvPrefix("OPD")
 	viper.AutomaticEnv()
 
-	viper.SetDefault("SOCKET", "/var/run/opd/opd.sock")
-	viper.SetDefault("DB_PATH", "/var/lib/opd/opd.db")
+	defaultSocket := "/var/run/opd/opd.sock"
+	defaultDB := "/var/lib/opd/opd.db"
+	defaultServers := "/var/lib/opd/servers"
+	defaultCache := "/var/lib/opd/cache"
+
+	if runtime.GOOS == "windows" {
+		defaultSocket = "127.0.0.1:7071"
+		defaultDB = "C:/opd/opd.db"
+		defaultServers = "C:/opd/servers"
+		defaultCache = "C:/opd/cache"
+	}
+
+	viper.SetDefault("SOCKET", defaultSocket)
+	viper.SetDefault("DB_PATH", defaultDB)
 	viper.SetDefault("AGENT_URL", "http://127.0.0.1:7070")
-	viper.SetDefault("SERVERS_DIR", "/var/lib/opd/servers")
-	viper.SetDefault("CACHE_DIR", "/var/lib/opd/cache")
+	viper.SetDefault("SERVERS_DIR", defaultServers)
+	viper.SetDefault("CACHE_DIR", defaultCache)
 	viper.SetDefault("LOG_LEVEL", "info")
 
 	return &Config{

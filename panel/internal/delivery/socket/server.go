@@ -7,6 +7,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 
 	"github.com/FareinheitsTemp/opd_panel/panel/internal/config"
 	"github.com/FareinheitsTemp/opd_panel/panel/internal/usecase"
@@ -32,12 +34,26 @@ func NewServer(
 }
 
 func (s *Server) Run(ctx context.Context) error {
-	if err := os.MkdirAll(filepath.Dir(s.cfg.SocketPath), 0750); err != nil {
-		return err
-	}
-	os.Remove(s.cfg.SocketPath)
+	var ln net.Listener
+	var err error
 
-	ln, err := net.Listen("unix", s.cfg.SocketPath)
+	addr := s.cfg.SocketPath
+
+	// On Windows or if addr looks like host:port — use TCP
+	if runtime.GOOS == "windows" || isTCP(addr) {
+		if isTCP(addr) {
+			ln, err = net.Listen("tcp", addr)
+		} else {
+			// default Windows TCP fallback
+			ln, err = net.Listen("tcp", "127.0.0.1:7071")
+		}
+	} else {
+		if err2 := os.MkdirAll(filepath.Dir(addr), 0750); err2 != nil {
+			return err2
+		}
+		os.Remove(addr)
+		ln, err = net.Listen("unix", addr)
+	}
 	if err != nil {
 		return err
 	}
@@ -75,4 +91,8 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		}
 		s.router.Handle(ctx, &req, enc)
 	}
+}
+
+func isTCP(addr string) bool {
+	return strings.Contains(addr, ":")
 }
