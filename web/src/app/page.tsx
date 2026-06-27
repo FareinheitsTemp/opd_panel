@@ -190,7 +190,6 @@ function SettingsPanel({ server, onSaved }: { server: ServerEntry, onSaved: ()=>
     <div style={{ padding:'16px 24px', overflowY:'auto', maxHeight:'100%' }}>
       <div style={{ maxWidth:560 }}>
         <h3 style={{ color:'#e0e0e0',fontSize:15,fontWeight:600,marginBottom:16 }}>Server Settings</h3>
-
         <div style={{ display:'grid',gap:12 }}>
           <div style={row}>
             <div><label style={lbl}>Name</label><input style={inp} value={form.name} onChange={set('name')} /></div>
@@ -205,14 +204,22 @@ function SettingsPanel({ server, onSaved }: { server: ServerEntry, onSaved: ()=>
             <div><label style={lbl}>Max Players</label><input style={inp} type="number" value={form.max_players} onChange={set('max_players')} /></div>
             <div><label style={lbl}>Gamemode</label>
               <select style={inp} value={form.gamemode} onChange={set('gamemode')}>
-                <option>survival</option><option>creative</option><option>adventure</option><option>spectator</option>
-              </select></div>
+                <option value="survival">survival</option>
+                <option value="creative">creative</option>
+                <option value="adventure">adventure</option>
+                <option value="spectator">spectator</option>
+              </select>
+            </div>
           </div>
           <div style={row}>
             <div><label style={lbl}>Difficulty</label>
               <select style={inp} value={form.difficulty} onChange={set('difficulty')}>
-                <option>peaceful</option><option>easy</option><option>normal</option><option>hard</option>
-              </select></div>
+                <option value="peaceful">peaceful</option>
+                <option value="easy">easy</option>
+                <option value="normal">normal</option>
+                <option value="hard">hard</option>
+              </select>
+            </div>
             <div style={{ display:'flex',alignItems:'center',gap:8,paddingTop:18 }}>
               <input type="checkbox" id="ar" checked={form.auto_restart} onChange={setCheck('auto_restart')} />
               <label htmlFor="ar" style={{ color:'#aaa',fontSize:13,cursor:'pointer' }}>Auto-restart on crash</label>
@@ -222,7 +229,6 @@ function SettingsPanel({ server, onSaved }: { server: ServerEntry, onSaved: ()=>
             <input style={inp} value={form.java_flags} onChange={set('java_flags')} placeholder="-XX:+UseG1GC -XX:MaxGCPauseMillis=200" /></div>
           <div style={{ color:'#555',fontSize:11 }}>Server folder: <code style={{color:'#aaa'}}>{server.dir}</code></div>
         </div>
-
         {err && <div style={{ color:'#f87171',fontSize:13,marginTop:10 }}>✗ {err}</div>}
         <button onClick={save} style={{ marginTop:16,...btn('#166534','#22c55e') }}>
           {saved ? '✔ Saved!' : 'Save Settings'}
@@ -295,6 +301,60 @@ function PluginsPanel({ server }: { server: ServerEntry }) {
         </div>
       )}
     </div>
+  )
+}
+
+// ---- Sidebar server list ----
+function SidebarContent({
+  loading, connErr, servers, selected, onSelect, onAdd
+}: {
+  loading: boolean
+  connErr: string|null
+  servers: ServerEntry[]
+  selected: string|null
+  onSelect: (id: string) => void
+  onAdd: () => void
+}) {
+  if (loading) {
+    return <div style={{ padding:'20px 16px',color:'#555',fontSize:13 }}>Connecting...</div>
+  }
+  if (connErr) {
+    return (
+      <div style={{ padding:'12px 16px',color:'#f87171',fontSize:12 }}>
+        ✗ {connErr}<br/><span style={{color:'#555'}}>Is daemon running?</span>
+      </div>
+    )
+  }
+  if (servers.length === 0) {
+    return (
+      <div style={{ padding:'16px',color:'#555',fontSize:13 }}>
+        No servers yet.<br/>
+        <button
+          onClick={onAdd}
+          style={{ marginTop:8,color:'#dc2626',background:'none',border:'none',cursor:'pointer',fontSize:13,padding:0 }}
+        >
+          + Add your first server
+        </button>
+      </div>
+    )
+  }
+  return (
+    <>
+      {servers.map(srv=>(
+        <button key={srv.id} onClick={()=>onSelect(srv.id)} style={{
+          display:'flex',alignItems:'center',width:'100%',padding:'10px 16px',
+          background:selected===srv.id?'#1a1a1a':'none',border:'none',
+          borderLeft:selected===srv.id?'2px solid #dc2626':'2px solid transparent',
+          cursor:'pointer',textAlign:'left',transition:'background 0.1s',
+        }}>
+          <StatusDot status={srv.status}/>
+          <div style={{ overflow:'hidden' }}>
+            <div style={{ color:'#e0e0e0',fontSize:14,fontWeight:500,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis' }}>{srv.name}</div>
+            <div style={{ color:'#555',fontSize:11 }}>{srv.id} · :{srv.port}</div>
+          </div>
+        </button>
+      ))}
+    </>
   )
 }
 
@@ -379,7 +439,6 @@ export default function Home() {
     <div style={{ minHeight:'100vh',background:'#0a0a0a',color:'#e0e0e0',
       fontFamily:"'Inter',system-ui,sans-serif",display:'flex',flexDirection:'column' }}>
 
-      {/* Header */}
       <header style={{ borderBottom:'1px solid #1e1e1e',padding:'14px 24px',
         display:'flex',alignItems:'center',justifyContent:'space-between',background:'#0d0d0d' }}>
         <div style={{ display:'flex',alignItems:'center',gap:10 }}>
@@ -399,38 +458,22 @@ export default function Home() {
       </header>
 
       <div style={{ display:'flex',flex:1,overflow:'hidden' }}>
-        {/* Sidebar */}
         <aside style={{ width:260,borderRight:'1px solid #1e1e1e',overflowY:'auto',
           background:'#0d0d0d',display:'flex',flexDirection:'column' }}>
           <div style={{ padding:'12px 16px 8px',fontSize:11,color:'#555',fontWeight:600,
             letterSpacing:'0.08em',textTransform:'uppercase' }}>
             Servers {servers.length>0&&`(${servers.length})`}
           </div>
-          {loading && <div style={{ padding:'20px 16px',color:'#555',fontSize:13 }}>Connecting...</div>}
-          {connErr && <div style={{ padding:'12px 16px',color:'#f87171',fontSize:12 }}>✗ {connErr}<br/><span style={{color:'#555'}}>Is daemon running?</span></div>}
-          {!loading&&!connErr&&servers.length===0&&(
-            <div style={{ padding:'16px',color:'#555',fontSize:13 }}>
-              No servers yet.<br/>
-              <button onClick={()=>setShowAdd(true)} style={{ marginTop:8,color:'#dc2626',background:'none',border:'none',cursor:'pointer',fontSize:13,padding:0 }}>+ Add your first server</button>
-            </div>
-          )}
-          {servers.map(srv=>(
-            <button key={srv.id} onClick={()=>selectServer(srv.id)} style={{
-              display:'flex',alignItems:'center',width:'100%',padding:'10px 16px',
-              background:selected===srv.id?'#1a1a1a':'none',border:'none',
-              borderLeft:selected===srv.id?'2px solid #dc2626':'2px solid transparent',
-              cursor:'pointer',textAlign:'left',transition:'background 0.1s',
-            }}>
-              <StatusDot status={srv.status}/>
-              <div style={{ overflow:'hidden' }}>
-                <div style={{ color:'#e0e0e0',fontSize:14,fontWeight:500,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis' }}>{srv.name}</div>
-                <div style={{ color:'#555',fontSize:11 }}>{srv.id} · :{srv.port}</div>
-              </div>
-            </button>
-          ))}
+          <SidebarContent
+            loading={loading}
+            connErr={connErr}
+            servers={servers}
+            selected={selected}
+            onSelect={selectServer}
+            onAdd={()=>setShowAdd(true)}
+          />
         </aside>
 
-        {/* Main */}
         <main style={{ flex:1,overflow:'hidden',display:'flex',flexDirection:'column' }}>
           {!sel ? (
             <div style={{ flex:1,display:'flex',alignItems:'center',justifyContent:'center',color:'#333',flexDirection:'column',gap:8 }}>
@@ -439,7 +482,6 @@ export default function Home() {
             </div>
           ) : (
             <div style={{ display:'flex',flexDirection:'column',height:'100%' }}>
-              {/* Server Header */}
               <div style={{ padding:'14px 24px',borderBottom:'1px solid #1e1e1e',
                 display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0 }}>
                 <div style={{ display:'flex',alignItems:'center',gap:10 }}>
@@ -458,7 +500,6 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Stats bar */}
               <div style={{ display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:1,
                 borderBottom:'1px solid #1e1e1e',background:'#1e1e1e',flexShrink:0 }}>
                 {stats.map(([label, value])=>(
@@ -469,7 +510,6 @@ export default function Home() {
                 ))}
               </div>
 
-              {/* Tabs */}
               <div style={{ display:'flex',borderBottom:'1px solid #1e1e1e',flexShrink:0 }}>
                 {(['console','settings','plugins'] as const).map(t=>(
                   <button key={t} onClick={()=>setTab(t)} style={tabStyle(t)}>
@@ -478,20 +518,20 @@ export default function Home() {
                 ))}
               </div>
 
-              {/* Tab content */}
               <div style={{ flex:1,overflow:'auto',display:'flex',flexDirection:'column' }}>
                 {tab==='console' && (
                   <>
                     <div style={{ flex:1,overflowY:'auto',background:'#060606',
                       fontFamily:'monospace',fontSize:12,padding:'12px 16px',lineHeight:1.6 }}>
-                      {logs.length===0 ? (
-                        <span style={{ color:'#333' }}>No logs yet.</span>
-                      ) : logs.map((l,i)=>(
-                        <div key={i} style={{ color:l.includes('ERROR')||l.includes('WARN')?'#f87171':'#9ca3af' }}>{l}</div>
-                      ))}
+                      {logs.length===0
+                        ? <span style={{ color:'#333' }}>No logs yet.</span>
+                        : logs.map((l,i)=>(
+                            <div key={i} style={{ color:l.includes('ERROR')||l.includes('WARN')?'#f87171':'#9ca3af' }}>{l}</div>
+                          ))
+                      }
                       <div ref={logsEndRef}/>
                     </div>
-                    {sel.status==='running'&&(
+                    {sel.status==='running' && (
                       <div style={{ padding:'10px 16px',borderTop:'1px solid #1e1e1e',display:'flex',gap:8,flexShrink:0 }}>
                         <span style={{ color:'#555',fontFamily:'monospace',fontSize:13,alignSelf:'center' }}>{'>'}</span>
                         <input value={cmd} onChange={e=>setCmd(e.target.value)}
@@ -511,7 +551,12 @@ export default function Home() {
         </main>
       </div>
 
-      {showAdd&&<AddServerModal onClose={()=>setShowAdd(false)} onCreated={()=>{fetchServers();setShowAdd(false)}}/>}
+      {showAdd && (
+        <AddServerModal
+          onClose={()=>setShowAdd(false)}
+          onCreated={()=>{ fetchServers(); setShowAdd(false) }}
+        />
+      )}
     </div>
   )
 }
