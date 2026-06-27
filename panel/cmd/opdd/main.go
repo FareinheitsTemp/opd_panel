@@ -15,6 +15,7 @@ import (
 	"github.com/FareinheitsTemp/opd_panel/panel/internal/agent"
 	"github.com/FareinheitsTemp/opd_panel/panel/internal/config"
 	"github.com/FareinheitsTemp/opd_panel/panel/internal/delivery/socket"
+	httpdelivery "github.com/FareinheitsTemp/opd_panel/panel/internal/delivery/http"
 	"github.com/FareinheitsTemp/opd_panel/panel/internal/repository/sqlite"
 	"github.com/FareinheitsTemp/opd_panel/panel/internal/usecase"
 	"github.com/FareinheitsTemp/opd_panel/panel/internal/versions"
@@ -63,12 +64,23 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// TCP socket server (internal)
 	srv, err := socket.NewServer(cfg, serverUC, scheduleUC, subuserUC, networkUC, databaseUC)
 	if err != nil {
 		log.Fatalf("socket server: %v", err)
 	}
 
-	log.Printf("opdd listening on %s", cfg.SocketPath)
+	// HTTP REST API server (for web frontend)
+	httpAddr := getEnv("OPD_HTTP_ADDR", "127.0.0.1:51201")
+	httpSrv := httpdelivery.NewHTTPServer(httpAddr, serverUC, scheduleUC, subuserUC, networkUC, databaseUC)
+
+	go func() {
+		if err := httpSrv.Run(ctx); err != nil {
+			log.Printf("HTTP server error: %v", err)
+		}
+	}()
+
+	log.Printf("opdd socket listening on %s", cfg.SocketPath)
 	if err := srv.Run(ctx); err != nil {
 		log.Fatalf("run: %v", err)
 	}
